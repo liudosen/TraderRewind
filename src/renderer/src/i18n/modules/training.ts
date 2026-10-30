@@ -125,7 +125,7 @@ export const zh = {
   'training.clearFilter': '清除筛选',
   'training.noClosedTrades':
     '还没有平仓记录。下单后由止损 / 止盈或手动平仓产生，并自动记入训练集。',
-  'training.noTradesWithTag': '没有带{tag}标签的平仓记录',
+  'training.noTradesWithTag': '没有命中{tag}的平仓记录',
   'training.col.openTime': '开仓时间',
   'training.col.side': '方向',
   'training.col.lot': '手数',
@@ -326,7 +326,7 @@ export const en: Record<keyof typeof zh, string> = {
   'training.clearFilter': 'Clear filter',
   'training.noClosedTrades':
     'No closed trades yet. A trade shows up here once a stop, target or manual close fills, and is saved to the session.',
-  'training.noTradesWithTag': 'No closed trades tagged {tag}',
+  'training.noTradesWithTag': 'No closed trades match {tag}',
   'training.col.openTime': 'Opened',
   'training.col.side': 'Side',
   'training.col.lot': 'Lots',

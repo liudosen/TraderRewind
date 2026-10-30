@@ -243,8 +243,9 @@ Each row carries open / close time, direction, size, entry, exit, R, close reaso
 **Click any trade and the chart jumps to that bar, drawing the entry and exit lines** — the
 single most-used action in review, because that's where you see what actually went wrong.
 
-Above the table, a tag filter lets you isolate a subset (say, only trades tagged "strong trend"),
-with multi-select.
+Above the table, a tag filter lets you isolate a subset (say, only trades tagged "strong trend").
+Multi-select is AND-ed: a trade must carry every selected tag to show up, so
+"right-mid-right" + "sub-strong trend" narrows down to the trades that are both.
 
 **The full setup is archived**
 

@@ -65,7 +65,7 @@ export function ReportContent({
 
   /**
    * 按订单标签筛选：统计口径跟着筛选走，方便只看某一类单子表现。
-   * 支持多选（Ctrl + 点击），选中多个时取并集。
+   * 支持多选，选中多个时取交集（一笔要带上所有选中标签才算命中）。
    */
   const { selected, toggle, select, label, tags, counts, filtered, filtering } =
     useTagFilter(trades)

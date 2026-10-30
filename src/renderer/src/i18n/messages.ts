@@ -234,8 +234,8 @@ const baseZh = {
   'tagFilter.allHint': '显示全部交易',
   'tagFilter.onHint': '点亮「{tag}」，可同时点亮多个',
   'tagFilter.offHint': '再点一下取消「{tag}」',
-  'tagFilter.orHint': '选中的标签之间是「或」：命中其中任意一个就显示',
-  'tagFilter.multi': '多选 {n} · 任意命中',
+  'tagFilter.andHint': '选中的标签之间是「且」：一笔交易要带上所有选中的标签才显示',
+  'tagFilter.multi': '多选 {n} · 同时命中',
   'tagFilter.none': '无标签',
 
   // ── 指标图例 / 参数面板 ────────────────────────────
@@ -521,8 +521,8 @@ const baseEn: Record<keyof typeof baseZh, string> = {
   'tagFilter.allHint': 'Show every trade',
   'tagFilter.onHint': 'Light up "{tag}" — you can light up several at once',
   'tagFilter.offHint': 'Click again to turn "{tag}" off',
-  'tagFilter.orHint': 'Selected tags are OR-ed: a trade shows if it has any of them',
-  'tagFilter.multi': '{n} selected · any match',
+  'tagFilter.andHint': 'Selected tags are AND-ed: a trade shows only if it carries all of them',
+  'tagFilter.multi': '{n} selected · all must match',
   'tagFilter.none': 'No tags',
 
   'ind.paramsHint': 'Click to edit parameters and colours',

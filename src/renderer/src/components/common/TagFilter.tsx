@@ -9,9 +9,14 @@ import { useT } from '../../i18n'
  * 一次点击就是一个开关：没点亮就点上，点亮的再点一下取消。
  * 点多少下就同时亮多少个，不需要按 Ctrl —— 多选是默认能力，不该藏在一个修饰键后面。
  *
- * 多个标签之间是「或」——打中任意一个就算命中。标签大多是互斥的分类
- * （弱趋势 / 震荡 / 左中左），用「且」去求交集经常一笔都命中不了，
- * 用户会以为筛选坏了，所以这里明确走并集。
+ * 多个标签之间是「且」——一笔交易要同时带上所有选中的标签才留下。
+ * 标签是按维度分开的（位置「右中右」、趋势强度「次强趋势」、形态「震荡」），
+ * 点亮第二个标签的意图是「在当前这批里再筛一层」，也就是求交集。
+ * 若走并集，已经筛到 3 笔时再点一个标签反而冒出新的单子、总数变多，
+ * 与「缩小范围」的直觉正好相反。
+ *
+ * 同一维度内的标签（「强趋势」和「震荡」）本就互斥，交集为空是正确结果：
+ * 那说明这批单子里没有同时符合两条的。空列表的提示会把标签名念出来，不至于看着像坏了。
  */
 
 export interface TagCounts {
@@ -35,22 +40,32 @@ export function countTags(trades: { tags?: string[] }[] | null | undefined): Tag
   return { tags, counts }
 }
 
-/** 多选过滤：命中任意一个选中标签即保留；空数组原样返回 */
+/**
+ * 多选过滤：一笔交易要同时带上所有选中标签才保留；空数组原样返回。
+ *
+ * 用 every 求交集，不是 some 求并集 —— 理由见文件头。
+ */
 export function filterByTags<T extends { tags?: string[] }>(trades: T[], tags: string[]): T[] {
   if (tags.length === 0) return trades
-  const want = new Set(tags)
-  return trades.filter((t) => (t.tags ?? []).some((g) => want.has(g)))
+  return trades.filter((t) => {
+    const have = t.tags ?? []
+    return tags.every((g) => have.includes(g))
+  })
 }
 
 /**
- * 「A」「B」这样列举；超过两个就省成「A」等 3 个，免得标题栏被撑爆。
+ * 「A」「B」这样列举；两个之间用「且」连起来，别让并排放着读成「或」。
+ * 超过两个就省成「A」等 3 个，免得标题栏被撑爆。
  * 英文用 "A", "B" / "A" +2 的说法，引号也跟着换。
  */
 export function formatTagList(tags: string[], locale: 'zh' | 'en' = 'zh'): string {
   const quote = (s: string): string => (locale === 'en' ? `"${s}"` : `「${s}」`)
   if (tags.length === 0) return locale === 'en' ? 'All' : '全部'
-  if (tags.length <= 2) {
-    return locale === 'en' ? tags.map(quote).join(', ') : tags.map(quote).join('')
+  if (tags.length === 1) return quote(tags[0])
+  if (tags.length === 2) {
+    return locale === 'en'
+      ? `${quote(tags[0])} and ${quote(tags[1])}`
+      : `${quote(tags[0])}且${quote(tags[1])}`
   }
   return locale === 'en'
     ? `${quote(tags[0])} +${tags.length - 1}`
@@ -204,7 +219,7 @@ export function TagFilter({
             'shrink-0 text-[var(--text-faint)]',
             dense ? 'text-[10px]' : 'text-[10.5px]'
           )}
-          title={t('tagFilter.orHint')}
+          title={t('tagFilter.andHint')}
         >
           {t('tagFilter.multi', { n: value.length })}
         </span>

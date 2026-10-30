@@ -85,9 +85,9 @@ export const zh = {
 
   'report.trades.title': '交易明细',
   'report.trades.hint': '点击任意一笔可跳转到 K 线对应位置',
-  'report.trades.filteredCount': '已按 {tags} 标签筛选 · {n} / {total} 笔',
+  'report.trades.filteredCount': '命中 {tags} · {n} / {total} 笔',
   'report.trades.empty': '本次训练还没有已平仓的交易',
-  'report.trades.emptyFiltered': '没有带 {tags} 标签的交易',
+  'report.trades.emptyFiltered': '没有同时命中 {tags} 的交易',
   'report.row.jumpHint': '点击跳转到该笔交易的 K 线位置',
   'report.row.openRecord': '下单记录 {time}',
   'report.row.openRecordTz': '下单记录 {time}（{tz}）',
@@ -198,9 +198,9 @@ export const en: Record<keyof typeof zh, string> = {
 
   'report.trades.title': 'Trades',
   'report.trades.hint': 'Click any trade to jump to that spot on the chart',
-  'report.trades.filteredCount': 'Filtered by {tags} · {n} / {total} trades',
+  'report.trades.filteredCount': 'Matching {tags} · {n} / {total} trades',
   'report.trades.empty': 'No closed trades in this session yet',
-  'report.trades.emptyFiltered': 'No trades tagged {tags}',
+  'report.trades.emptyFiltered': 'No trades carry all of {tags}',
   'report.row.jumpHint': 'Jump to this trade on the chart',
   'report.row.openRecord': 'Order placed {time}',
   'report.row.openRecordTz': 'Order placed {time} ({tz})',
