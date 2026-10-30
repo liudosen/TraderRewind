@@ -94,6 +94,13 @@ const DRAWING_LABEL_KEYS: Record<DrawingType, MessageKey> = {
 interface ReplayChartProps {
   bars: Bar[]
   cursor: number
+  /**
+   * 当前这根「只走到一半」的 K 线（截断到已揭示的分钟）；走完了就是 null。
+   *
+   * 显示周期比 1 分钟大时（H1/H4…），`bars[cursor]` 是整根、含还没走到的分钟，
+   * 直接画出来等于把未来的收盘价提前告诉用户 —— 由 store 算好传进来。
+   */
+  partialBar?: Bar | null
   /** 当前所有持仓（可多笔、可多空并存），每笔都会在图上画出自己的开仓 / 止损 / 止盈线 */
   positions: Position[]
   /** 当前操作焦点的那笔持仓（价格卡、持仓卡高亮的那笔） */
@@ -611,6 +618,7 @@ function drawTrades(
 export function ReplayChart({
   bars,
   cursor,
+  partialBar,
   positions,
   activePositionId,
   digits,
@@ -813,10 +821,23 @@ export function ReplayChart({
   }, [activeTool])
 
   // ---------- 指标计算（只依赖 bars / 实例配置，回放推进时不重算） ----------
+  /**
+   * 指标计算用的 K 线：把游标那一根换成「已揭示部分」。
+   *
+   * 否则在 H1 上刚打到 13:20 时，MA/MACD 的最后一点会用到 13:59 的收盘价，
+   * 均线跟着往一根还没发生过的方向拐 —— 和 K 线本身被截断的口径就对不上了。
+   */
+  const calcBars = useMemo(() => {
+    if (!partialBar || bars.length === 0 || cursor < 0 || cursor >= bars.length) return bars
+    const out = bars.slice()
+    out[cursor] = partialBar
+    return out
+  }, [bars, cursor, partialBar])
+
   const overlayData = useMemo(() => {
     const out: { key: string; uid: string; slot: string; color: string; values: Series }[] = []
     for (const inst of overlays) {
-      for (const line of calcOverlayLines(inst.id as OverlayId, bars, inst.params, inst.colors)) {
+      for (const line of calcOverlayLines(inst.id as OverlayId, calcBars, inst.params, inst.colors)) {
         // series key 带上实例 uid：同一个指标添加两次也不会互相覆盖
         out.push({
           key: `${inst.uid}:${line.key}`,
@@ -828,7 +849,7 @@ export function ReplayChart({
       }
     }
     return out
-  }, [bars, overlays])
+  }, [calcBars, overlays])
 
   const subPaneData = useMemo(
     () =>
@@ -836,7 +857,7 @@ export function ReplayChart({
         uid: inst.uid,
         view: calcSubPaneView(
           inst.id as SubPaneId,
-          bars,
+          calcBars,
           inst.params,
           {
             upColor: theme.upColor,
@@ -845,7 +866,7 @@ export function ReplayChart({
           inst.colors
         )
       })),
-    [bars, subPanes, theme.upColor, theme.downColor]
+    [calcBars, subPanes, theme.upColor, theme.downColor]
   )
 
   /**
@@ -1311,7 +1332,7 @@ export function ReplayChart({
     const prevWindow = tfChanged ? (userWindowRef.current ?? readVisibleWindow(chart)) : null
 
     if (appendedOne) {
-      const bar = bars[cursor]
+      const bar = partialBar ?? bars[cursor]
       series.update({
         time: bar.time as UTCTimestamp,
         open: bar.open,
@@ -1326,7 +1347,8 @@ export function ReplayChart({
     } else {
       const data: CandlestickData[] = []
       for (let i = 0; i < visibleCount; i++) {
-        const b = bars[i]
+        // 最后一根可能只走到一半（大周期上切过来时）：画截断版，别把未来的收盘价露出来
+        const b = i === visibleCount - 1 && partialBar ? partialBar : bars[i]
         data.push({
           time: b.time as UTCTimestamp,
           open: b.open,
@@ -1399,7 +1421,7 @@ export function ReplayChart({
     prevLenRef.current = visibleCount
     prevBarsRef.current = bars
     redrawRef.current()
-  }, [bars, cursor])
+  }, [bars, cursor, partialBar])
 
   // ---------- 指标 series：结构变化时整体重建 ----------
   useEffect(() => {

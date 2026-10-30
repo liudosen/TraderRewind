@@ -9,8 +9,10 @@ import { getContractSize, getContractSpec, getDigits } from '@shared/constants/c
 import { calcPnl, quoteUsdRate } from '@shared/utils/pnl'
 import {
   aggregateBars,
+  bucketStart,
   indexAtTime,
   isChartTimeframe,
+  partialBucketBar,
   timeframeSeconds,
   type Bar
 } from '@shared/utils/timeframe'
@@ -179,6 +181,42 @@ export interface CrossRateSeries {
   direct: boolean
 }
 
+/**
+ * 走完一根显示周期的 K 线之后，「精确到分钟」的回放位置该落到哪。
+ *
+ * 一根 H1 走完 = 这一小时里最后一根 1 分钟 K 线（13:59），而不是桶起点 13:00 ——
+ * 只有这样才能把「打到哪一分钟」记准，切回小周期时也不会倒退一整格。
+ * 数据不够长（走到最后一段）时贴着最后一根，不越过已有行情。
+ */
+function bucketEndTime(bucket: number, tf: string, raw: Bar[]): number {
+  const lastRaw = raw.length > 0 ? raw[raw.length - 1].time : bucket
+  const sec = timeframeSeconds(tf)
+  if (sec > 0) return Math.min(bucket + sec - 60, lastRaw)
+  // 日历周期（W1/MN1/Q1/Y1）没有固定秒数：往后探到下一个桶的起点
+  for (const probe of [86400, 8 * 86400, 32 * 86400, 93 * 86400, 367 * 86400]) {
+    const next = bucketStart(bucket + probe, tf)
+    if (next > bucket) return Math.min(next - 60, lastRaw)
+  }
+  return Math.min(bucket, lastRaw)
+}
+
+/**
+ * 当前这根 K 线在 `cursorTime` 这个时刻是否「只走到一半」。
+ *
+ * 走到一半 → 返回截断版（只含已揭示的那些分钟），图表/价格/成交价都用它；
+ * 已经走完（或没有游标时间）→ 返回 null，调用方直接用 `bars[cursor]`。
+ */
+function partialAt(
+  rawBars: Bar[],
+  tf: string,
+  bar: Bar | undefined,
+  cursorTime: number
+): Bar | null {
+  if (!bar || !(cursorTime > 0)) return null
+  if (cursorTime >= bucketEndTime(bar.time, tf, rawBars)) return null
+  return partialBucketBar(rawBars, tf, cursorTime)
+}
+
 interface TrainingState {
   // 数据
   datasets: DatasetRow[]
@@ -203,8 +241,21 @@ interface TrainingState {
   rawBars: Bar[]
   /** 聚合后的显示用 K 线 */
   bars: Bar[]
+  /**
+   * 当前这根「正在走」的 K 线，可能被截断到 `cursorTime` 为止。
+   *
+   * 显示周期比 1 分钟大时（比如 H1），`bars[cursor]` 是整根、含还没走到的分钟；
+   * 图表的最后一根、价格卡、开仓/平仓的成交价都必须用这里 —— 否则等于提前看到了未来。
+   * 桶已经走完时为 null，表示直接使用 `bars[cursor]`。
+   */
+  partialBar: Bar | null
   cursor: number
-  /** 当前 K 线的时间（切周期时用它锚定位置） */
+  /**
+   * 精确到**分钟**的回放位置：最后一根已揭示的 1 分钟 K 线的时间。
+   *
+   * `cursor` 是「当前显示周期数组里的下标」，在 H4 上它只能定位到 4 小时一格的桶；
+   * 真正记录「打到哪了」得靠这个时间戳 —— 落库、切周期锚定、截断当前这根 K 线都用它。
+   */
   cursorTime: number
   /** 回测起点：新建会话时的初始游标，重置时回到这里 */
   initialCursor: number
@@ -628,9 +679,21 @@ function settlePosition(
   if (!(cut > 0)) return
   const remainderLot = Number((position.lot - cut).toFixed(4))
 
-  const bar = bars[cursor]
+  /**
+   * 成交价用「当前这根可能被截断的 K 线」，不能用整根 bars[cursor]。
+   *
+   * H1 上刚回放到 13:20 时，bars[cursor] 的 close 是 13:59 的价——那是十分钟后的未来。
+   * partialBar 只算到 13:20，close 就是 13:20 那分钟的收盘价。
+   */
+  const bar = get().partialBar ?? bars[cursor]
   const rawExit = priceOverride ?? bar?.close ?? position.entryPrice
-  const exitTime = timeOverride ?? bar?.time ?? Math.floor(Date.now() / 1000)
+  /**
+   * 手动平仓 / 减仓：成交时间就是「当前已揭示到的那一分钟」（cursorTime），
+   * 因为成交价取的是那个时刻的收盘价，时间得对得上。
+   * 止损止盈走 timeOverride（整根 K 线扫描，落在这根的开头）。
+   */
+  const exitTime =
+    timeOverride ?? get().cursorTime ?? bar?.time ?? Math.floor(Date.now() / 1000)
 
   /**
    * 平仓端也要吃成本：
@@ -752,6 +815,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   digits: 5,
   rawBars: [],
   bars: [],
+  partialBar: null,
   cursor: 0,
   cursorTime: 0,
   initialCursor: 0,
@@ -914,6 +978,28 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
         cursor = openingIndex
       }
 
+      /**
+       * 精确到分钟的回放位置。
+       *
+       * 会话里存的 `current_bar_time` 现在就是「最后一根已揭示的 1 分钟 K 线」，
+       * 直接用它，别退回 `bars[cursor].time` —— 那是当前显示周期的桶起点，
+       * 在 H4 上等于把位置往回吞掉将近 4 小时。
+       * 老数据存的是当时周期的桶起点，也是合法时间戳，照样能用（只是粗一点）。
+       */
+      const lastBarTime = bars.length > 0 ? bars[bars.length - 1].time : 0
+      const cursorBar = bars[cursor]
+      const cursorTime =
+        session.completed_at != null
+          ? lastBarTime
+          : session.current_bar_time != null &&
+              bars.length > 0 &&
+              session.current_bar_time >= bars[0].time
+            ? Math.min(session.current_bar_time, lastBarTime)
+            : // 全新会话：起点那根算「已走完」，否则第一眼会看到一根只有 1 分钟的残线
+              cursorBar
+              ? bucketEndTime(cursorBar.time, tf, rawBars)
+              : 0
+
       // 先把时区切到该会话打单时记录的时区，再落状态，
       // 这样组件第一帧渲染时用的就是正确的时区（老会话没记就跟随全局设置）
       useTimezoneStore.getState().useSessionTimezone(session.tz ?? null)
@@ -949,7 +1035,9 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
         rawBars,
         bars,
         cursor,
-        cursorTime: bars[cursor]?.time ?? 0,
+        cursorTime,
+        // 当前这根可能还没走完（在大周期上只算到 cursorTime），图表和价格都用它
+        partialBar: partialAt(rawBars, tf, cursorBar, cursorTime),
         // 换了回测集，上一集选中的那笔单子必须丢掉：
         // 否则它的开/关仓价格线会继续画在新会话的图上，价位完全对不上。
         focusedTrade: null,
@@ -1008,6 +1096,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       bars: [],
       cursor: 0,
       cursorTime: 0,
+      partialBar: null,
       initialCursor: 0,
       initialTime: 0,
       positions: [],
@@ -1049,8 +1138,11 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       timeframe: tf,
       bars,
       cursor: nextCursor,
+      // 注意：cursorTime 保持原值（更精确），不要写回新周期的桶起点 ——
+      // 正因为它留着「13:20」，切到 H1 后这一根才知道该截断到 13:20，
+      // 而不是把整根 H1（含 13:59 收盘价）画出来。
+      partialBar: partialAt(rawBars, tf, bars[nextCursor], anchor),
       initialCursor: nextInitial,
-      // 注意：cursorTime 保持原值（更精确），不要写回新周期的桶起点
       playing
     })
     get().persistState()
@@ -1079,14 +1171,24 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   },
 
   advance: () => {
-    const { cursor, bars } = get()
+    const { cursor, bars, rawBars, timeframe } = get()
     if (cursor >= bars.length - 1) {
       set({ playing: false })
       return
     }
     const next = cursor + 1
     const bar = bars[next]
-    set({ cursor: next, cursorTime: bar.time })
+    /**
+     * 走完这一根之后，「打到哪一分钟」的答案是这一格的**最后一分钟**（13:59），
+     * 不是桶起点 13:00 —— 一根 H1 走完 = 这一小时全看过了。
+     * 落库/切周期都靠这个时间戳，用桶起点会让进度在大小周期间来回缩水。
+     */
+    const nextTime = bucketEndTime(bar.time, timeframe, rawBars)
+    set({
+      cursor: next,
+      cursorTime: nextTime,
+      partialBar: partialAt(rawBars, timeframe, bar, nextTime)
+    })
     // 走到区间最后一根 = 这个回测集完成
     if (next >= bars.length - 1) get().markCompleted()
 
@@ -1116,9 +1218,12 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
 
   /** 重置：回到回测起点 + 清空全部订单 + 余额复位，然后从头重新打这个回测集 */
   resetSession: async () => {
-    const { activeSession, bars, initialCursor, initialBalance } = get()
+    const { activeSession, bars, rawBars, timeframe, initialCursor, initialBalance } = get()
     if (!activeSession || bars.length === 0) return
     const start = Math.max(0, Math.min(bars.length - 1, initialCursor))
+    const startBar = bars[start]
+    // 起点那根算「已走完」：和新建会话一致的基线，否则重开后第一眼是一根残线
+    const startTime = startBar ? bucketEndTime(startBar.time, timeframe, rawBars) : 0
     set({
       playing: false,
       positions: [],
@@ -1126,9 +1231,10 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       closedTrades: [],
       balance: initialBalance,
       cursor: start,
-      cursorTime: bars[start]?.time ?? 0,
+      cursorTime: startTime,
+      partialBar: null,
       initialCursor: start,
-      initialTime: bars[start]?.time ?? 0,
+      initialTime: startBar?.time ?? 0,
       focusedTrade: null,
       focusSeq: 0,
       focusNote: null,
@@ -1139,7 +1245,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     try {
       await window.api.resetSession(activeSession.id, {
         currentIndex: start,
-        currentBarTime: bars[start]?.time ?? null
+        currentBarTime: startTime || null
       })
     } catch (e: any) {
       set({ error: e?.message ?? String(e) })
@@ -1314,8 +1420,13 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     const last = revealIndexOf(bars, cursor, completedAt)
     const firstTime = bars[0].time
     const lastTime = bars[bars.length - 1].time
-    /** 判「未来」用平仓时间：开平都在游标之后才算越界；跨游标的持仓按已发生处理 */
-    const revealTime = bars[last]?.time ?? firstTime
+    /**
+     * 判「未来」用平仓时间：开平都在游标之后才算越界；跨游标的持仓按已发生处理。
+     *
+     * 右边界取「已揭示到的分钟」（cursorTime），不是当前那根 K 线的桶起点：
+     * 刚在 08:59 手动平掉的单，桶起点是 08:55，用它会把这笔真实的成交判成「未来」。
+     */
+    const revealTime = Math.max(bars[last]?.time ?? firstTime, get().cursorTime || 0)
 
     if (completedAt == null && trade.exitTime > revealTime) {
       set({ focusNote: 'future' })
@@ -1341,10 +1452,16 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   openPosition: (side, note, tags) => {
     const { bars, cursor, lot, symbol, digits, executionCost, crossRate } = get()
     if (!symbol || bars.length === 0) return
-    const bar = bars[cursor]
+    /**
+     * 价格取「当前这根可能被截断的 K 线」：在 H1 上刚回放到 13:20 时，
+     * bars[cursor].close 是 13:59 的价（未来），partialBar.close 才是 13:20 的价。
+     */
+    const bar = get().partialBar ?? bars[cursor]
     if (!bar) return
+    // 成交时间跟着已揭示的分钟走，成交价才和它自洽
+    const entryTime = get().cursorTime || bar.time
     // 交易时段外严禁开仓（平仓走 closePosition，不受限制）
-    if (tradeWindowBlockAt(bar.time)) return
+    if (tradeWindowBlockAt(entryTime)) return
 
     const contractSize = getContractSize(symbol)
     const slip = slippagePrice(executionCost, digits)
@@ -1359,7 +1476,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
      * 否则 USDJPY 的 10 万美元名义价值会被当成 1500 万日元再乘费率。
      * 交叉盘再叠一层「本机美元直盘」的真实汇率（crossRate）。
      */
-    const entryRate = quoteUsdRate(symbol, entry, { quoteToUsd: crossRateAt(crossRate, bar.time) }).rate
+    const entryRate = quoteUsdRate(symbol, entry, { quoteToUsd: crossRateAt(crossRate, entryTime) }).rate
     const commission = commissionPerSide(executionCost, lot, contractSize, entry, entryRate)
 
     const next: Position = {
@@ -1368,7 +1485,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       symbol,
       lot,
       entryPrice: entry,
-      entryTime: bar.time,
+      entryTime,
       // 开仓时只给一条线，由用户第一次拖动的方向决定它是止损还是止盈
       sl: null,
       tp: null,
@@ -1465,6 +1582,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       activeSession,
       cursor,
       bars,
+      cursorTime,
       balance,
       barsPerSec,
       timeframe,
@@ -1478,7 +1596,9 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       currentIndex: cursor,
       speed: barsPerSec,
       balance,
-      currentBarTime: bars[cursor]?.time ?? null,
+      // 存「精确到分钟」的位置，不是当前周期的桶起点：
+      // 下次打开 / 切周期都靠它把游标放回原处，桶起点会把位置往回吞一整格
+      currentBarTime: cursorTime || bars[cursor]?.time || null,
       displayTimeframe: timeframe,
       // 必须每次带上，否则会被置空
       drawingsJson: JSON.stringify(drawings),
@@ -1571,9 +1691,9 @@ export function tradeWindowBlockAt(sec: number): string | null {
 /** 当前 K 线那根能否开仓（下单入口用这个） */
 export function tradeWindowBlock(): string | null {
   const s = useTrainingStore.getState()
-  const bar = s.bars[s.cursor]
+  const bar = s.partialBar ?? s.bars[s.cursor]
   if (!bar) return null
-  return tradeWindowBlockAt(bar.time)
+  return tradeWindowBlockAt(s.cursorTime || bar.time)
 }
 
 // 开发期调试钩子：便于自动化验证直接读实时状态（生产构建不会打包进来）

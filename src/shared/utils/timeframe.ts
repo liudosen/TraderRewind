@@ -138,7 +138,7 @@ function civilFromDays(z: number): { y: number; m: number; d: number } {
 }
 
 /** 计算某时刻所属周期的起点（秒） */
-function bucketStart(timeSec: number, id: string): number {
+export function bucketStart(timeSec: number, id: string): number {
   const secs = timeframeSeconds(id)
   if (secs > 0) {
     // 日内周期以 UTC 自然日为锚点，保证自定义间隔（如 7 分钟）不会跨日漂移
@@ -211,6 +211,58 @@ export function aggregateBars(bars: Bar[], id: string): Bar[] {
 
   if (cur) out.push(cur)
   return out
+}
+
+/**
+ * 某一根「还没走完」的 K 线。
+ *
+ * 回放停在 13:45、显示周期是 H1 时，13:00 那根 H1 只能算到 13:45 ——
+ * 收盘价是 13:45 的价格，最高/最低也只统计已揭示的那几分钟。
+ * 拿整根 H1（含 13:46–13:59）去画，等于把还没走到的行情提前摊在图上。
+ *
+ * @param raw     源数据（始终是 1 分钟 K 线，按时间升序）
+ * @param id      显示周期
+ * @param cutTime 已揭示到的时刻（含）= 最后一根已揭示的 1 分钟 K 线时间
+ * @returns 截断后的 K 线；桶已经走完（或该周期没有「未完成」概念）时返回 null
+ */
+export function partialBucketBar(raw: Bar[], id: string, cutTime: number): Bar | null {
+  if (raw.length === 0 || id === 'M1' || !isChartTimeframe(id)) return null
+  const bucket = bucketStart(cutTime, id)
+
+  // 二分找这个桶里的第一根原始 K 线
+  let lo = 0
+  let hi = raw.length - 1
+  let first = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (raw[mid].time >= bucket) {
+      first = mid
+      hi = mid - 1
+    } else {
+      lo = mid + 1
+    }
+  }
+  if (first < 0 || bucketStart(raw[first].time, id) !== bucket) return null
+
+  let out: Bar | null = null
+  let i = first
+  for (; i < raw.length; i++) {
+    const b = raw[i]
+    // 出了这个桶、或者已经越过回放位置，就停
+    if (b.time > cutTime || bucketStart(b.time, id) !== bucket) break
+    if (!out) out = { ...b }
+    else {
+      if (b.high > out.high) out.high = b.high
+      if (b.low < out.low) out.low = b.low
+      out.close = b.close
+      out.volume += b.volume
+    }
+  }
+  if (!out) return null
+
+  // 桶里还有没揭示的 K 线 → 这根确实没走完，必须用截断版；否则就是完整的，别动它
+  const next = raw[i]
+  return next && bucketStart(next.time, id) === bucket ? out : null
 }
 
 /** 找到时间 <= target 的最后一根 K 线下标；找不到返回 0 */

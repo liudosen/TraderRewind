@@ -184,6 +184,10 @@ export function TrainingPane(): React.JSX.Element {
   const digits = useTrainingStore((s) => s.digits)
   const bars = useTrainingStore((s) => s.bars)
   const cursor = useTrainingStore((s) => s.cursor)
+  /** 精确到分钟的回放位置（= 最后一根已揭示的 1 分钟 K 线的时间） */
+  const cursorTime = useTrainingStore((s) => s.cursorTime)
+  /** 当前这根只走到一半时的截断版；走完了是 null */
+  const partialBar = useTrainingStore((s) => s.partialBar)
   /** 回放窗口的起点（会话开头带的历史参考 K 线不算进度） */
   const initialCursor = useTrainingStore((s) => s.initialCursor)
   const playing = useTrainingStore((s) => s.playing)
@@ -748,7 +752,16 @@ export function TrainingPane(): React.JSX.Element {
   const progress = bars.length > 1
     ? Math.min(1, Math.max(0, (cursor - replayStart) / Math.max(1, bars.length - 1 - replayStart)))
     : 0
-  const currentBar = bars[cursor]
+  /**
+   * 「现在」这根 K 线 = 已经揭示到的位置。
+   *
+   * 显示周期比 1 分钟大时，`bars[cursor]` 是整根（含还没走到的分钟），
+   * 它的 close 是未来的价格 —— 价格卡、下单按钮上的报价、浮动盈亏都必须用
+   * `partialBar`，否则切到大周期就等于提前看到了这一格的收盘价。
+   */
+  const currentBar = partialBar ?? bars[cursor]
+  /** 界面上的「当前时刻」：精确到分钟，比 bars[cursor].time 的桶起点准 */
+  const currentTime = cursorTime || currentBar?.time || 0
   const priceDigits = digits
 
   /**
@@ -763,7 +776,7 @@ export function TrainingPane(): React.JSX.Element {
   /** 当前回测集的交易时段（null = 全天不限）；按会话自己的时区判定 */
   const sessionTradeWindow = useTrainingStore((s) => s.activeSession?.trade_window)
   const tradeWindow = useMemo(() => normalizeTradeWindow(sessionTradeWindow), [sessionTradeWindow])
-  const inWindowNow = currentBar ? inTradeWindow(currentBar.time, timezone, tradeWindow) : true
+  const inWindowNow = currentBar ? inTradeWindow(currentTime, timezone, tradeWindow) : true
 
   /**
    * 交叉盘的「报价货币 → 美元」汇率序列（本机美元直盘）。
@@ -776,8 +789,8 @@ export function TrainingPane(): React.JSX.Element {
    * 避免每笔都二分一遍（列表里还会逐行调用 pnlOf）。
    */
   const quoteToUsdNow = useMemo(
-    () => crossRateAt(crossRate, currentBar ? currentBar.time : 0),
-    [crossRate, currentBar]
+    () => crossRateAt(crossRate, currentTime),
+    [crossRate, currentTime]
   )
 
   /** 单笔持仓按当前价折算的浮动盈亏（美元） */
@@ -882,7 +895,7 @@ export function TrainingPane(): React.JSX.Element {
     if (!symbol) return null
     const price = currentBar ? currentBar.close : 0
     const pv = pointValuePerLot(symbol, price, {
-      quoteToUsd: crossRateAt(crossRate, currentBar ? currentBar.time : 0)
+      quoteToUsd: crossRateAt(crossRate, currentTime)
     })
     return {
       ...pv,
@@ -890,7 +903,7 @@ export function TrainingPane(): React.JSX.Element {
       perPointAtLot: pv.usd * lot,
       perPointPerLot: pv.usd
     }
-  }, [symbol, currentBar, crossRate, lot, locale])
+  }, [symbol, currentBar, currentTime, crossRate, lot, locale])
 
   const equity = balance + floatingPnl
 
@@ -1056,7 +1069,8 @@ export function TrainingPane(): React.JSX.Element {
              * 从来不会回写这份拷贝 —— 直接拿它渲染，进度条就会一直停在打开那一刻
              * （比如停在 71%，实际已经跑过好几千根）。
              */
-            const row = isActive && currentBar ? { ...s, current_bar_time: currentBar.time } : s
+            // 正在打的这一集用「精确到分钟」的游标时间，切大周期也不会往后退一整格
+            const row = isActive && currentBar ? { ...s, current_bar_time: currentTime } : s
             const done = isActive ? completedAt != null : s.completed_at != null
             const pct = done ? 100 : sessionProgress(row)
             return (
@@ -1667,6 +1681,8 @@ export function TrainingPane(): React.JSX.Element {
                 <ReplayChart
                   bars={bars}
                   cursor={cursor}
+                  // 最后一根只画到已揭示的分钟，别把这一格的收盘价提前露出来
+                  partialBar={partialBar}
                   revealIndex={revealIndex}
                   positions={positions}
                   activePositionId={activePosition?.id ?? null}
@@ -2182,7 +2198,7 @@ export function TrainingPane(): React.JSX.Element {
                 quoteRate={
                   symbol
                     ? quoteUsdRate(symbol, currentBar ? currentBar.close : 0, {
-                        quoteToUsd: crossRateAt(crossRate, currentBar ? currentBar.time : 0)
+                        quoteToUsd: crossRateAt(crossRate, currentTime)
                       }).rate
                     : 1
                 }
