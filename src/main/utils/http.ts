@@ -9,6 +9,7 @@ import https from 'node:https'
 import net from 'node:net'
 import tls from 'node:tls'
 import { URL } from 'node:url'
+import { parseProxyEndpoint, parseProxyOrNull } from '@shared/utils/proxy'
 
 export interface FetchOptions {
   /** 代理地址，如 127.0.0.1:7890 或 http://127.0.0.1:7890 */
@@ -73,17 +74,26 @@ const sharedHttpsAgent = new https.Agent({
 })
 
 export function parseProxy(proxy?: string): ProxyConfig | null {
-  if (!proxy) return null
-  let p = proxy.trim()
-  if (!p) return null
-  p = p.replace(/^[a-z]+:\/\//i, '')
-  p = p.split('/')[0]
-  const idx = p.lastIndexOf(':')
-  if (idx <= 0) return { host: p, port: 7890 }
-  const host = p.slice(0, idx)
-  const port = Number(p.slice(idx + 1))
-  if (!host || !Number.isFinite(port) || port <= 0) return null
-  return { host, port }
+  return parseProxyOrNull(proxy)
+}
+
+/**
+ * 代理地址有问题时返回一句能照着改的说明，没问题返回 null。
+ *
+ * 主进程这边没有 i18n（其他校验错误也都是中文），所以直接给出带示例的中文提示；
+ * 界面上还会在输入框下方另给一条本地化的即时提示，两处不冲突。
+ */
+export function describeProxyProblem(raw?: string): string | null {
+  const r = parseProxyEndpoint(raw)
+  if (r.state === 'empty' || r.state === 'ok') return null
+  const shown = (raw ?? '').trim()
+  if (r.code === 'ip-short') {
+    return `代理地址「${shown}」看起来像 IP，但段数不对 —— 应该是 4 段，例如 127.0.0.1:7890`
+  }
+  if (r.code === 'port') {
+    return `代理地址「${shown}」的端口不对 —— 应该是 1–65535 的数字，例如 127.0.0.1:7890`
+  }
+  return `代理地址「${shown}」无法识别 —— 格式应为 主机:端口，例如 127.0.0.1:7890`
 }
 
 /**
@@ -187,7 +197,16 @@ function createProxyTlsAgent(proxy: ProxyConfig, timeoutMs: number): https.Agent
 async function fetchOnce(urlStr: string, opts: FetchOptions): Promise<Buffer> {
   const url = new URL(urlStr)
   const isHttps = url.protocol === 'https:'
+  const hasProxyInput = (opts.proxy ?? '').trim().length > 0
   const proxy = parseProxy(opts.proxy)
+  /**
+   * 代理填了但解析不出来时直接报错，绝不静默退回直连。
+   * 静默直连最坑：用户以为代理生效了，实际在裸连被墙的站，
+   * 于是几千个文件全部超时，还看不出是代理那一栏的问题。
+   */
+  if (hasProxyInput && !proxy) {
+    throw new FetchError(`代理地址无法解析：${opts.proxy}`)
+  }
   const timeoutMs = opts.timeoutMs ?? 30000
   const signal = opts.signal
 

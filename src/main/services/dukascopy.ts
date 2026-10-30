@@ -23,7 +23,7 @@ import type {
 } from '@shared/types/download'
 import { getInstrument, TIMEFRAME_SECONDS } from '@shared/constants/catalog'
 import { setMaxListeners } from 'node:events'
-import { fetchBuffer, FetchError } from '../utils/http'
+import { fetchBuffer, FetchError, describeProxyProblem } from '../utils/http'
 import { mergeBars, type BarAccum } from './bi5'
 import { Bi5DecodePool } from './decode-pool'
 import { saveDownloadedBars } from '../db/dataset-repo'
@@ -248,6 +248,13 @@ export class DukascopyJob {
     if (this.request.symbols.length === 0) {
       return { ok: false, unitCount: 0, error: '请至少选择一个品种' }
     }
+    /**
+     * 代理地址先校验再开工。以前这一栏填错（少一位的 127.0.0、全角冒号）
+     * 会一路带到网络层，几千个文件全部失败之后才吐一句 ENOTFOUND，
+     * 用户根本看不出是自己那一栏写错了。
+     */
+    const proxyErr = describeProxyProblem(this.request.proxy)
+    if (proxyErr) return { ok: false, unitCount: 0, error: proxyErr }
 
     const now = Date.now()
     // 重置（防止 prepare 被重复调用时重复累加）

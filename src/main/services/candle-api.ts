@@ -21,7 +21,7 @@ import type {
   InstrumentInfo
 } from '@shared/types/download'
 import { getInstrument, TIMEFRAME_SECONDS } from '@shared/constants/catalog'
-import { fetchBuffer } from '../utils/http'
+import { fetchBuffer, describeProxyProblem } from '../utils/http'
 import { SpeedMeter } from './dukascopy'
 import { saveDownloadedBars } from '../db/dataset-repo'
 
@@ -244,6 +244,9 @@ export class CandleJob {
     if (this.request.symbols.length === 0) {
       return { ok: false, unitCount: 0, error: '请至少选择一个品种' }
     }
+    // 代理地址先校验再开工，别让错误地址拖到几千个文件全失败才暴露
+    const proxyErr = describeProxyProblem(this.request.proxy)
+    if (proxyErr) return { ok: false, unitCount: 0, error: proxyErr }
 
     this.fromMs = from
     this.toMs = to

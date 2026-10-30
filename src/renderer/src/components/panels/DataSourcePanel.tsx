@@ -18,6 +18,7 @@ import { useDownloadStore, type DatasetRow } from '../../stores/download-store'
 import { ProgressBar } from '../common/ProgressBar'
 import { DateRangePicker } from '../common/DateRangePicker'
 import { eachDayKey, estimateHourFiles, localDayKeyFromTs, parseYmd } from '@shared/utils/daterange'
+import { parseProxyEndpoint } from '@shared/utils/proxy'
 import { describeContract } from '@shared/utils/pnl'
 import type {
   DownloadPhase,
@@ -195,6 +196,23 @@ export function DataSourcePanel(): React.JSX.Element {
    */
   const maxConcurrency = isCandle ? 8 : 64
   const shownConcurrency = Math.min(concurrency, maxConcurrency)
+
+  /**
+   * 代理地址边输边校验。手打的地址最常见的错是全角冒号「：」、
+   * 冒号后多一个空格、IP 少写一段 —— 这些等跑到网络层只会得到一句
+   * ENOTFOUND，几千个文件全失败之后才暴露。这里当场把话说清楚。
+   */
+  const proxyParse = parseProxyEndpoint(proxy)
+  const proxyProblem =
+    proxyParse.state === 'invalid'
+      ? t(
+          proxyParse.code === 'ip-short'
+            ? 'ds.proxyInvalidIp'
+            : proxyParse.code === 'port'
+              ? 'ds.proxyInvalidPort'
+              : 'ds.proxyInvalidHost'
+        )
+      : null
 
   const isRunning = useMemo(() => {
     if (!snapshot) return false
@@ -389,12 +407,23 @@ export function DataSourcePanel(): React.JSX.Element {
                     value={proxy}
                     onChange={(e) => patchConfig({ proxy: e.target.value })}
                     placeholder="127.0.0.1:7890"
-                    className="w-full max-w-[280px] rounded-md border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2.5 py-1.5 font-mono text-[11.5px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--border-strong)]"
+                    className={clsx(
+                      'w-full max-w-[280px] rounded-md border bg-[var(--surface-2)] px-2.5 py-1.5 font-mono text-[11.5px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-faint)]',
+                      proxyProblem
+                        ? 'border-amber-500/60 focus:border-amber-500'
+                        : 'border-[var(--border-subtle)] focus:border-[var(--border-strong)]'
+                    )}
                   />
                   <span className="text-[10.5px] text-[var(--text-faint)]">
                     {t('ds.proxyHint')}
                   </span>
                 </div>
+                {proxyProblem && (
+                  <p className="mt-1 flex items-start gap-1 text-[10.5px] leading-tight text-amber-400">
+                    <AlertCircle size={11} className="mt-[1px] shrink-0" />
+                    <span>{proxyProblem}</span>
+                  </p>
+                )}
               </Field>
             </div>
           </div>
@@ -414,7 +443,10 @@ export function DataSourcePanel(): React.JSX.Element {
           <div className="mt-4 flex items-center gap-3">
             <button
               onClick={() => void startDownload()}
-              disabled={starting || isRunning || selected.length === 0 || totalUnits === 0}
+              disabled={
+                starting || isRunning || selected.length === 0 || totalUnits === 0 || !!proxyProblem
+              }
+              title={proxyProblem ?? undefined}
               className={clsx(
                 'inline-flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-[12px] font-medium transition-colors',
                 'bg-[var(--c-accent)] text-white hover:brightness-110',

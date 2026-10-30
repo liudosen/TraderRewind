@@ -179,6 +179,9 @@ const baseZh = {
   'ds.range': '时间范围',
   'ds.proxy': 'HTTP 代理（可留空直连）',
   'ds.proxyHint': 'Dukascopy 在国内需走代理',
+  'ds.proxyInvalidIp': '这段像是 IP，但段数不对 —— 应该是 4 段，例如 127.0.0.1:7890',
+  'ds.proxyInvalidPort': '端口不对 —— 应该是 1–65535 之间的数字，例如 127.0.0.1:7890',
+  'ds.proxyInvalidHost': '无法识别的地址 —— 格式为 主机:端口，例如 127.0.0.1:7890',
   'ds.m1Note':
     '只下载 1 分钟（M1）数据：绘图时由 1 分钟聚合出 5 / 15 / 30 分钟、1 / 4 小时、日线等更大周期，保证各周期口径一致，也便于跨周期对照。',
   'ds.fullyCovered': '所选日期范围已全部下载过（日历中划线日期即为已下载），请换一个区间再下载。',
@@ -466,6 +469,9 @@ const baseEn: Record<keyof typeof baseZh, string> = {
   'ds.range': 'Date range',
   'ds.proxy': 'HTTP proxy (leave blank for direct)',
   'ds.proxyHint': 'Dukascopy needs a proxy from mainland China',
+  'ds.proxyInvalidIp': 'Looks like an IP but the segments are off — needs 4, e.g. 127.0.0.1:7890',
+  'ds.proxyInvalidPort': 'Bad port — must be a number from 1 to 65535, e.g. 127.0.0.1:7890',
+  'ds.proxyInvalidHost': 'Unrecognized address — use host:port, e.g. 127.0.0.1:7890',
   'ds.m1Note':
     'Only 1-minute (M1) data is downloaded. The chart aggregates it into 5 / 15 / 30 minute, 1 / 4 hour and daily candles, so every timeframe shares the same source and stays comparable.',
   'ds.fullyCovered':

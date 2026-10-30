@@ -7,6 +7,21 @@
 
 暂时没有待发布的改动。
 
+## [0.2.2] - 2026-10-30
+
+### 修复
+
+- 代理地址填错时，以前要等全部文件（动辄五六千个）下载失败后，才吐出
+  `getaddrinfo ENOTFOUND 127.0.0.1：7890` 这种普通用户看不懂的错误。
+  现在：
+  - 输入框下方**边输边提示**具体哪里不对（段数不对 / 端口不对 / 无法识别），
+    同时禁用「开始下载」，不让错误地址进到网络层
+  - 主进程启动下载前再校验一次，非法代理直接返回可读的错误原因
+  - 全角冒号「：」、冒号后多敲的空格、粘贴带进来的空白会自动纠正 ——
+    这是中文输入法下最常见的手滑，肉眼几乎看不出来
+  - 填了代理但解析不出来时，不再静默退回直连（那会让人以为代理生效了，
+    实际在裸连被墙的站，于是全部超时）
+
 ## [0.2.1] - 2026-10-30
 
 ### 修复
@@ -68,7 +83,8 @@
 - OKX 与 Binance 的接口在中国大陆直连需要代理
 - 加密数据源的 1 分钟历史深度受交易所限制，越久远的区间越容易抓空
 
-[Unreleased]: https://github.com/liudosen/TraderRewind/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/liudosen/TraderRewind/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/liudosen/TraderRewind/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/liudosen/TraderRewind/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/liudosen/TraderRewind/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/liudosen/TraderRewind/releases/tag/v0.1.0
