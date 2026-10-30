@@ -191,6 +191,12 @@ export class DukascopyJob {
   private rateLimitHits = 0
   /** 提前中止的原因（如限流） */
   private abortReason: string | null = null
+  /** 当前允许同时在跑的 worker 数：遇到 429 会自适应下调 */
+  private workerCap = 0
+  /** 实际在跑的 worker 数，用于把并发压到 workerCap 以内 */
+  private activeWorkers = 0
+  /** 限流冷却截止时间：全体 worker 共用一次等待，而不是各自睡一遍 */
+  private cooldownUntil = 0
 
   constructor(request: DownloadRequest, options: DukascopyJobOptions) {
     this.request = request
@@ -387,58 +393,111 @@ export class DukascopyJob {
 
   private async runPool(concurrency: number): Promise<void> {
     const signal = this.controller.signal
+    this.workerCap = concurrency
     const workers = Array.from({ length: Math.min(concurrency, this.units.length) }, () => this.workerLoop())
     await Promise.all(workers)
     void signal
   }
 
+  /** 申请一个并发名额；超出 workerCap 时排队，避免限流后还硬冲 */
+  private async acquireWorker(signal: AbortSignal): Promise<boolean> {
+    while (!signal.aborted) {
+      if (this.activeWorkers < this.workerCap) {
+        this.activeWorkers++
+        return true
+      }
+      await new Promise((r) => setTimeout(r, 120))
+    }
+    return false
+  }
+
+  private releaseWorker(): void {
+    if (this.activeWorkers > 0) this.activeWorkers--
+  }
+
+  /** 全体共用的限流冷却：避免 64 个 worker 各自 sleep，页面看着像卡死 */
+  private async waitCooldown(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted && this.cooldownUntil > Date.now()) {
+      await new Promise((r) => setTimeout(r, Math.min(500, this.cooldownUntil - Date.now())))
+    }
+  }
+
+  /**
+   * 被限流时的退避策略。三件事一起做：
+   * 1) 全体共享一个冷却窗口 —— 以前每个 worker 各睡 15 秒，64 路一起睡，
+   *    于是 CPU 归零、一条连接都没有，进度条一动不动，看着就是「卡死」
+   * 2) 并发折半（下限 4），慢慢退到数据源受得了的速度
+   * 3) 把原因写进状态文案，让用户看到「在等」而不是以为程序死了
+   */
+  private applyRateLimitBackoff(state: SymbolState): void {
+    const prev = this.workerCap
+    this.workerCap = Math.max(4, Math.floor(this.workerCap / 2))
+    const waitMs = Math.min(30000, 1000 * Math.pow(1.6, this.rateLimitHits))
+    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + waitMs)
+    state.message =
+      `数据源限流（429）：并发 ${prev} → ${this.workerCap}，` +
+      `等待 ${Math.round(waitMs / 1000)} 秒后继续`
+
+    // 一直限流说明这个出口 IP 已经被盯上了，继续硬刷只会更糟
+    if (this.rateLimitHits >= 40 && !this.abortReason) {
+      this.abortReason =
+        '数据源持续限流（HTTP 429）：请把并发降到 8~16、或换一个代理节点后重试'
+      this.controller.abort()
+    }
+  }
+
   private async workerLoop(): Promise<void> {
     const signal = this.controller.signal
     while (!signal.aborted) {
-      const index = this.nextUnitIndex++
-      if (index >= this.units.length) return
-      const unit = this.units[index]
-      const state = this.states.get(unit.symbol)
-      if (!state) continue
-
-      if (state.phase === 'queued') {
-        state.phase = 'downloading'
-        state.message = '下载中…'
-      }
-
-      const flight = { symbol: unit.symbol, received: 0 }
-      this.inFlight.set(unit.seq, flight)
-
+      if (!(await this.acquireWorker(signal))) return
       try {
-        await this.downloadUnit(unit, state, flight, signal)
-      } catch (e: any) {
-        if (signal.aborted || e?.message === 'aborted' || e?.message === 'pool destroyed') {
-          // 取消：不计数
-        } else if (e instanceof FetchError && (e.statusCode === 404 || e.statusCode === 400)) {
-          // 该小时无数据（周末 / 休市 / 未来时间），属正常情况
-        } else if (e instanceof FetchError && e.statusCode === 429) {
-          this.rateLimitHits += 1
-          if (!state.lastError) state.lastError = 'HTTP 429 数据源限流'
-          // 连续大量被限流说明并发过高，提前止损并提示用户
-          if (this.rateLimitHits >= 15 && !this.abortReason) {
-            this.abortReason = '数据源限流（HTTP 429）：请把并发降到 16~32、或稍后再试'
-            this.controller.abort()
+        const index = this.nextUnitIndex++
+        if (index >= this.units.length) return
+        const unit = this.units[index]
+        const state = this.states.get(unit.symbol)
+        if (!state) continue
+
+        // 冷却窗口内先等着，别拿一个注定 429 的请求去撞
+        await this.waitCooldown(signal)
+        if (signal.aborted) return
+
+        if (state.phase === 'queued') {
+          state.phase = 'downloading'
+          state.message = '下载中…'
+        }
+
+        const flight = { symbol: unit.symbol, received: 0 }
+        this.inFlight.set(unit.seq, flight)
+
+        try {
+          await this.downloadUnit(unit, state, flight, signal)
+        } catch (e: any) {
+          if (signal.aborted || e?.message === 'aborted' || e?.message === 'pool destroyed') {
+            // 取消：不计数
+          } else if (e instanceof FetchError && (e.statusCode === 404 || e.statusCode === 400)) {
+            // 该小时无数据（周末 / 休市 / 未来时间），属正常情况
+          } else if (e instanceof FetchError && e.statusCode === 429) {
+            this.rateLimitHits += 1
+            if (!state.lastError) state.lastError = 'HTTP 429 数据源限流'
+            this.applyRateLimitBackoff(state)
+          } else {
+            state.failedUnits += 1
+            if (!state.lastError) {
+              state.lastError = e?.message ?? String(e)
+            }
           }
-        } else {
-          state.failedUnits += 1
-          if (!state.lastError) {
-            state.lastError = e?.message ?? String(e)
+        } finally {
+          this.inFlight.delete(unit.seq)
+          if (state.phase !== 'cancelled' && state.phase !== 'error') {
+            state.done += 1
+            if (flight.received > 0) {
+              // 指数滑动平均估计单文件大小
+              state.avgUnitBytes = state.avgUnitBytes * 0.85 + flight.received * 0.15
+            }
           }
         }
       } finally {
-        this.inFlight.delete(unit.seq)
-        if (state.phase !== 'cancelled' && state.phase !== 'error') {
-          state.done += 1
-          if (flight.received > 0) {
-            // 指数滑动平均估计单文件大小
-            state.avgUnitBytes = state.avgUnitBytes * 0.85 + flight.received * 0.15
-          }
-        }
+        this.releaseWorker()
       }
     }
   }

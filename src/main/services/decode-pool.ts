@@ -23,6 +23,16 @@ interface PendingTask {
 interface WorkerSlot {
   worker: Worker
   busy: boolean
+  /** 该线程正在处理的任务 id —— 线程挂掉时靠它把对应的 await reject 掉 */
+  taskId?: number
+  /** 单任务看门狗：线程既不报错也不返回（卡死）时兜底 */
+  watchdog?: ReturnType<typeof setTimeout>
+  /**
+   * 已经宣布报废。
+   * failSlot 里会 terminate()，而 terminate 又会触发一次 'exit'，
+   * 没有这个标记就会「exit → failSlot → terminate → exit …」无限重建线程。
+   */
+  dead?: boolean
 }
 
 interface QueuedJob {
@@ -30,6 +40,13 @@ interface QueuedJob {
   transfer: ArrayBuffer[]
   task: PendingTask
 }
+
+/**
+ * 单个文件的解码上限。
+ * 正常一小时 tick 数据解压只要几十毫秒，给到 60 秒只可能是线程卡死或内存打满。
+ * 没有这个上限的话，一个卡住的任务会让整个下载停在中途的百分比上再也不动。
+ */
+const DECODE_TIMEOUT_MS = 60_000
 
 export class Bi5DecodePool {
   private slots: WorkerSlot[] = []
@@ -73,6 +90,8 @@ export class Bi5DecodePool {
 
     worker.on('message', (msg: { id: number; bars?: Float64Array; error?: string }) => {
       slot.busy = false
+      slot.taskId = undefined
+      this.clearWatchdog(slot)
       const task = this.pending.get(msg.id)
       if (task) {
         this.pending.delete(msg.id)
@@ -84,12 +103,82 @@ export class Bi5DecodePool {
 
     worker.on('error', (e) => {
       console.error('[bi5-pool] worker 运行异常：', e)
-      slot.busy = false
-      this.pump()
+      this.failSlot(slot, e instanceof Error ? e : new Error(String(e)))
+    })
+
+    /**
+     * 线程退出必须单独处理。
+     * 只挂 'error' 是不够的：worker 被 OOM 杀掉、或 LZMA 解压把栈打穿时，
+     * 走到的是 'exit' 而不是 'error'。以前这里没人管，那个 slot 的 busy 永远是 true，
+     * 它手上那个 await 也永远不返回 —— 于是整个下载停在 93% 一动不动，
+     * CPU 归零、一条连接都没有，看着像「卡住」，其实是永远不会结束。
+     */
+    worker.on('exit', (code) => {
+      if (this.destroyed) return
+      this.failSlot(slot, new Error(`解码线程退出（code ${code}）`))
     })
 
     worker.unref?.()
     this.slots.push(slot)
+  }
+
+  private clearWatchdog(slot: WorkerSlot): void {
+    if (slot.watchdog) {
+      clearTimeout(slot.watchdog)
+      slot.watchdog = undefined
+    }
+  }
+
+  /**
+   * 一个线程不可用了（报错 / 退出 / 超时）：把它手上的任务 reject 掉，
+   * 然后把线程换掉，别让池子容量越跑越小。
+   */
+  private failSlot(slot: WorkerSlot, err: Error): void {
+    // 一个线程可能先报 error 再报 exit，也可能被自己的 terminate 再触发一次 exit
+    if (slot.dead) return
+    slot.dead = true
+
+    const id = slot.taskId
+    slot.busy = false
+    slot.taskId = undefined
+    this.clearWatchdog(slot)
+
+    if (id != null) {
+      const task = this.pending.get(id)
+      if (task) {
+        this.pending.delete(id)
+        task.reject(err)
+      }
+    }
+
+    if (this.destroyed) return
+    this.slots = this.slots.filter((s) => s !== slot)
+    void slot.worker.terminate().catch(() => undefined)
+
+    try {
+      this.spawn()
+    } catch (e) {
+      // 连线程都重建不出来：只能退回主线程解码，保住功能
+      console.warn('[bi5-pool] 重建解码线程失败，退化为主线程解码：', e)
+      this.usable = false
+      this.drainInline()
+      return
+    }
+    this.pump()
+  }
+
+  /** 池子彻底不可用时，把排队的任务搬到主线程做完 */
+  private drainInline(): void {
+    const queued = this.queue
+    this.queue = []
+    for (const job of queued) {
+      const { data, scale, baseMs, tfSec } = job.payload
+      decompressLzma(Buffer.from(data))
+        .then((raw) => {
+          job.task.resolve(aggregateBars(raw, scale, baseMs, tfSec))
+        })
+        .catch((e) => job.task.reject(e instanceof Error ? e : new Error(String(e))))
+    }
   }
 
   private pump(): void {
@@ -99,11 +188,19 @@ export class Bi5DecodePool {
       const job = this.queue.shift()
       if (!job) return
       slot.busy = true
+      slot.taskId = job.payload.id
+      // 看门狗只管「已经派给线程」的任务：排队等待是池子吞吐问题，不该算超时
+      slot.watchdog = setTimeout(() => {
+        this.failSlot(slot, new Error('解码超时（60 秒）'))
+      }, DECODE_TIMEOUT_MS)
       try {
         slot.worker.postMessage(job.payload, job.transfer)
       } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e))
         slot.busy = false
-        job.task.reject(e instanceof Error ? e : new Error(String(e)))
+        slot.taskId = undefined
+        this.clearWatchdog(slot)
+        job.task.reject(err)
       }
     }
   }
@@ -137,6 +234,7 @@ export class Bi5DecodePool {
   async destroy(): Promise<void> {
     this.destroyed = true
     this.queue = []
+    for (const slot of this.slots) this.clearWatchdog(slot)
     for (const task of this.pending.values()) {
       task.reject(new Error('pool destroyed'))
     }
