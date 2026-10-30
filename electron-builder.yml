@@ -12,8 +12,16 @@ files:
   - out/**/*
   - package.json
 win:
+  # 平台级默认文件名，zip（免安装包）就用这个；
+  # nsis 有自己的 artifactName 覆盖，两个文件不会重名。
+  # 文件名里不带空格，省得下载链接被转义成 %20 看起来像乱码
+  artifactName: ${productName}-${version}-${arch}.${ext}
   target:
+    # 安装程序：有开始菜单项、可卸载、能自选安装目录
     - target: nsis
+      arch: [x64]
+    # 免安装包：把 win-unpacked 打成 zip，解压即可运行，适合拷到别的机器/U 盘
+    - target: zip
       arch: [x64]
   icon: build/icon.ico
 mac:
@@ -26,3 +34,4 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+  artifactName: ${productName}-${version}-setup.${ext}

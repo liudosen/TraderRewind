@@ -635,8 +635,8 @@ export function SettingsPanel(): React.JSX.Element {
         {/* ── 关于（通用） ─────────────────────── */}
         <div className={clsx('mb-6', tab !== 'general' && 'hidden')}>
           <Section title={t('settings.about.title')} cols={2}>
-            <Row label={t('settings.about.version')} value="0.2.0" />
-            <Row label={t('settings.about.license')} value="MIT License" />
+            <Row label={t('settings.about.version')} value={__APP_VERSION__} />
+            <Row label={t('settings.about.license')} value="Apache-2.0" />
             <Row
               label={t('settings.about.dataDir')}
               value={info?.userDataDir ?? '--'}

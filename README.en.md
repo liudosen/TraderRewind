@@ -15,6 +15,7 @@ Runs entirely offline. No account, no connection to any broker. All data stays o
 
 ## Contents
 
+- [Download and install](#download-and-install)
 - [The problem it solves](#the-problem-it-solves)
 - [Screenshots](#screenshots)
 - [Features in detail](#features-in-detail)
@@ -33,6 +34,21 @@ Runs entirely offline. No account, no connection to any broker. All data stays o
 - [Build and run](#build-and-run)
 - [Contributing](#contributing)
 - [License](#license)
+
+## Download and install
+
+Grab the file you need from [Releases](https://github.com/liudosen/TraderRewind/releases).
+No Node, no toolchain, nothing to configure.
+
+| File | Who it's for | How to use |
+| --- | --- | --- |
+| `TraderRewind-<version>-setup.exe` | You want it properly installed | Run the installer, pick a directory if you like, then launch from the Start menu |
+| `TraderRewind-<version>-portable.zip` | You don't want to install anything | Unzip anywhere and run the `TraderRewind.exe` inside |
+
+**Requirements**: Windows 10 / 11 (64-bit). macOS and Linux need a build from source — see [Build and run](#build-and-run).
+
+The binaries are not code-signed, so Windows SmartScreen may show "Windows protected your PC"
+on first launch. Click **More info → Run anyway**.
 
 ## The problem it solves
 

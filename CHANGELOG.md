@@ -7,6 +7,21 @@
 
 暂时没有待发布的改动。
 
+## [0.2.0] - 2026-10-30
+
+首个提供可下载安装包的版本。此前 0.1.0 只发布了源码，这次把 Windows 安装程序
+和免安装压缩包一并挂到 Release 上，不用配环境、不用装 Node，下载就能用。
+
+### 新增
+
+- **Windows 安装程序**：NSIS 安装包，可选安装目录、可自选是否为当前用户安装
+- **免安装便携包**：解压即用的 zip，适合放在 U 盘或不想写注册表的机器
+
+### 变更
+
+- 版本号收敛到 `package.json` 一处，构建时注入界面，「设置 → 关于」不再单独写死
+- 「设置 → 关于」的许可证标注修正为 Apache-2.0（此前误标为 MIT）
+
 ## [0.1.0] - 2026-10-30
 
 首个公开版本。
@@ -36,7 +51,6 @@
 - **中英文双语**：界面文案支持简体中文 / English 切换
 - **交易成本模型**：按手佣金与按名义价值百分比两种口径，可随时开关
 - **日志与标签**：交易日志、自定义标签、标签多选筛选
-- **Windows 安装包**：NSIS 安装程序，可选安装目录
 
 ### 已知限制
 
@@ -45,5 +59,6 @@
 - OKX 与 Binance 的接口在中国大陆直连需要代理
 - 加密数据源的 1 分钟历史深度受交易所限制，越久远的区间越容易抓空
 
-[Unreleased]: https://github.com/liudosen/TraderRewind/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/liudosen/TraderRewind/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/liudosen/TraderRewind/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/liudosen/TraderRewind/releases/tag/v0.1.0
