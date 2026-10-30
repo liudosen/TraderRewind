@@ -1,3 +1,5 @@
+**简体中文** | [English](README.en.md)
+
 # TraderRewind
 
 历史行情回放与交易训练工具 — 完全本地运行，免费开源。
