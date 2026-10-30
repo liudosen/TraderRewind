@@ -736,9 +736,17 @@ export function TrainingPane(): React.JSX.Element {
     setReportOpen(true)
   }, [cursor, bars.length, closedTrades.length, activeSession?.id, openedAtEnd, reportOpen])
 
-  /** 回放进度（只做展示，不可拖动） */
+  /**
+   * 回放进度（只做展示，不可拖动）。
+   *
+   * 分母用「回测区间根数」。`initialCursor` 是当前周期数组里的下标，
+   * 切过周期后由 store 按时间重算；这里再夹一次，防止历史脏数据把它推到数组外，
+   * 一越界分母就会被兜成 1，进度直接显示成满格。
+   */
+  const replayStart = Math.min(Math.max(0, initialCursor), Math.max(0, bars.length - 1))
+  const replayBars = Math.max(1, bars.length - 1 - replayStart + 1)
   const progress = bars.length > 1
-    ? Math.min(1, Math.max(0, (cursor - initialCursor) / Math.max(1, bars.length - 1 - initialCursor)))
+    ? Math.min(1, Math.max(0, (cursor - replayStart) / Math.max(1, bars.length - 1 - replayStart)))
     : 0
   const currentBar = bars[cursor]
   const priceDigits = digits
@@ -749,9 +757,8 @@ export function TrainingPane(): React.JSX.Element {
    * 会话开头会带一段「历史参考」K 线（见 store 里的 warmupSeconds）——
    * 它们只用来给用户看盘，不会被回放推进到。所以进度和「第几根 / 共几根」
    * 都要从这根算起，否则一打开会话就显示完成了 20%，看着像进度丢了。
+   * 具体取值见上面的 replayStart（已经夹在数组范围内）。
    */
-  const replayStart = initialCursor
-  const replayBars = Math.max(1, bars.length - replayStart)
 
   /** 当前回测集的交易时段（null = 全天不限）；按会话自己的时区判定 */
   const sessionTradeWindow = useTrainingStore((s) => s.activeSession?.trade_window)
@@ -1040,12 +1047,24 @@ export function TrainingPane(): React.JSX.Element {
               {t('training.noSessions')}
             </div>
           )}
-          {sessions.map((s) => (
+          {sessions.map((s) => {
+            const isActive = activeSession?.id === s.id
+            /**
+             * 正在打的这一集用内存里的实时游标，别用数据库快照。
+             *
+             * 列表数据是打开页面时查出来的一份拷贝，回放每前进一根只会节流落库，
+             * 从来不会回写这份拷贝 —— 直接拿它渲染，进度条就会一直停在打开那一刻
+             * （比如停在 71%，实际已经跑过好几千根）。
+             */
+            const row = isActive && currentBar ? { ...s, current_bar_time: currentBar.time } : s
+            const done = isActive ? completedAt != null : s.completed_at != null
+            const pct = done ? 100 : sessionProgress(row)
+            return (
             <div
               key={s.id}
               className={clsx(
                 'group flex items-start gap-1 px-2 py-2 transition-colors',
-                activeSession?.id === s.id
+                isActive
                   ? 'bg-[var(--c-accent-tint)]'
                   : 'hover:bg-[var(--surface-2)]'
               )}
@@ -1066,19 +1085,21 @@ export function TrainingPane(): React.JSX.Element {
                 {/* 回放进度：按会话区间的时间比例展示，下次打开会从这里继续 */}
                 <div
                   title={t('training.sessionProgressTitle', {
-                    time: s.current_bar_time ? fmtTime(s.current_bar_time, timezone) : t('training.startPoint'),
-                    state: s.completed_at
+                    time: row.current_bar_time
+                      ? fmtTime(row.current_bar_time, timezone)
+                      : t('training.startPoint'),
+                    state: done
                       ? t('journal.done')
-                      : t('training.progressPct', { p: sessionProgress(s) })
+                      : t('training.progressPct', { p: pct })
                   })}
                   className="mt-1.5 h-[3px] w-full overflow-hidden rounded-full bg-[var(--surface-3)]"
                 >
                   <div
                     className={clsx(
-                      'h-full rounded-full',
-                      s.completed_at ? 'bg-[var(--c-pos)]' : 'bg-[var(--c-accent)]'
+                      'h-full rounded-full transition-[width] duration-200',
+                      done ? 'bg-[var(--c-pos)]' : 'bg-[var(--c-accent)]'
                     )}
-                    style={{ width: `${Math.max(2, sessionProgress(s))}%` }}
+                    style={{ width: `${pct}%` }}
                   />
                 </div>
               </button>
@@ -1096,7 +1117,8 @@ export function TrainingPane(): React.JSX.Element {
                 <Trash2 size={13} />
               </button>
             </div>
-          ))}
+            )
+          })}
         </div>
       </aside>
       ) : (
@@ -1494,15 +1516,17 @@ export function TrainingPane(): React.JSX.Element {
             <div className="flex min-w-0 flex-1 items-center gap-2">
               {/* 回放进度：只读展示，不允许拖动（避免回退到已发生的行情） */}
               <div
-                title={t('training.progressReadonly')}
+                title={`${t('training.progressReadonly')} · ${(progress * 100).toFixed(1)}%`}
                 className="relative h-1.5 min-w-[40px] flex-1 cursor-default select-none overflow-hidden rounded-full bg-[var(--surface-3)]"
               >
                 <div
-                  className="h-full rounded-full bg-[var(--c-accent)] transition-[width] duration-150"
-                  style={{ width: `${Math.max(1.5, progress * 100)}%` }}
+                  className="h-full rounded-full bg-[var(--c-accent)] transition-[width] duration-200"
+                  style={{ width: `${progress * 100}%` }}
                 />
               </div>
-              {!barTight && (
+              {/* 计数才是唯一每根都在变的读数：进度条 1 像素 ≈ 上百根 K 线，
+                  窄窗口也尽量留着它，否则整条看着像死的 */}
+              {!barNarrow && (
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
                   {formatNumber(Math.max(1, cursor - replayStart + 1))}/{formatNumber(replayBars)}
                 </span>

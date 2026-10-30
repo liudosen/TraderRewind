@@ -208,6 +208,14 @@ interface TrainingState {
   cursorTime: number
   /** 回测起点：新建会话时的初始游标，重置时回到这里 */
   initialCursor: number
+  /**
+   * 回测起点的时间戳（= 起点那根 K 线的 time）。
+   *
+   * `initialCursor` 是**当前显示周期**下的数组下标，切周期后数组长度就变了，
+   * 旧下标会失效（切到 H1 时它会大于 bars.length，进度被算成 1/1）。
+   * 所以另存一份时间：切周期时按时间重新定位下标，进度才不会崩。
+   */
+  initialTime: number
 
   // 回放
   playing: boolean
@@ -747,6 +755,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   cursor: 0,
   cursorTime: 0,
   initialCursor: 0,
+  initialTime: 0,
 
   playing: false,
   barsPerSec: 2,
@@ -948,6 +957,8 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
         focusNote: null,
         // 重置 / 回到起点都指「会话开打的那一根」，不是数组第 0 根（前面是预热历史）
         initialCursor: openingIndex,
+        // 同时记住这一根的时间：切周期要靠它把下标换算到新周期上
+        initialTime: bars[openingIndex]?.time ?? 0,
         playing: false,
         barsPerSec:
           session.speed && session.speed >= 1 && session.speed <= 20 ? Math.round(session.speed) : 2,
@@ -997,6 +1008,8 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       bars: [],
       cursor: 0,
       cursorTime: 0,
+      initialCursor: 0,
+      initialTime: 0,
       positions: [],
       activePositionId: null,
       closedTrades: [],
@@ -1012,7 +1025,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   },
 
   setTimeframe: (tf) => {
-    const { rawBars, bars: curBars, cursor, cursorTime, playing } = get()
+    const { rawBars, bars: curBars, cursor, cursorTime, playing, initialTime } = get()
     if (rawBars.length === 0) {
       set({ timeframe: tf })
       return
@@ -1023,10 +1036,20 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     // 看起来就是「切周期把进度重置了」。
     const anchor = cursorTime || curBars[cursor]?.time || bars[0]?.time || 0
     const nextCursor = indexAtTime(bars, anchor)
+    /**
+     * 回测起点下标也要跟着换周期重算 —— 它存的是旧周期数组里的位置。
+     * 不重算的话，从 M5 切到 H1 后 initialCursor（≈18000）远大于新数组长度（≈1400），
+     * 进度条分母被 `Math.max(1, …)` 兜成 1，顶部会显示成「1/1」。
+     */
+    const nextInitial =
+      initialTime > 0 && bars.length > 0
+        ? Math.min(indexAtTime(bars, initialTime), nextCursor)
+        : get().initialCursor
     set({
       timeframe: tf,
       bars,
       cursor: nextCursor,
+      initialCursor: nextInitial,
       // 注意：cursorTime 保持原值（更精确），不要写回新周期的桶起点
       playing
     })
@@ -1038,7 +1061,12 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     if (playing && cursor >= bars.length - 1) return
     set({ playing })
     // 暂停时立刻把进度落库，避免下次打开倒退
-    if (!playing) get().persistState()
+    if (!playing) {
+      get().persistState()
+      // 顺手刷新一次列表数据：播放过程中列表用的是打开页面时的快照，
+      // 停下来了就把真实的余额/进度对回来（播放中刷新太费，交给实时游标顶）
+      void get().loadSessions()
+    }
   },
 
   togglePlay: () => {
@@ -1099,6 +1127,8 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       balance: initialBalance,
       cursor: start,
       cursorTime: bars[start]?.time ?? 0,
+      initialCursor: start,
+      initialTime: bars[start]?.time ?? 0,
       focusedTrade: null,
       focusSeq: 0,
       focusNote: null,
