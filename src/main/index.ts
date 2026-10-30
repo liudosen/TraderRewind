@@ -20,6 +20,13 @@ let mainWindow: BrowserWindow | null = null
 // 仅当显式设置 TR_DEBUG_PORT 时开启 CDP，便于调试渲染进程
 if (process.env.TR_DEBUG_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.TR_DEBUG_PORT)
+  /**
+   * 窗口被别的窗口挡住时，Chromium 的原生遮挡计算会把渲染停掉，
+   * 于是 CDP 的 Page.captureScreenshot 一直拿不到帧、直接超时。
+   * 关掉这项计算，窗口即使在后台也保持绘制 —— 自动化截图/巡检才跑得通。
+   * 只在开了调试端口时才生效，正常启动不受影响。
+   */
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 }
 
 function createWindow(): void {

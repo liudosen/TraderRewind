@@ -188,6 +188,14 @@ export function DataSourcePanel(): React.JSX.Element {
   /** 外汇的 bi5 文件约 12 KB；加密一行 K 线按 120 字节估 */
   const estBytes = isCandle ? totalUnits * 120 : totalUnits * 12 * 1024
 
+  /**
+   * 加密接口限速更严，滑杆上限只有 8。但保存下来的并发值可能是外汇时期设的 64
+   * （启动时从 meta 读回），直接塞给 max=8 的滑杆会显示成「超出刻度的 64」，
+   * 看着像坏了。这里按上限夹一下再显示。
+   */
+  const maxConcurrency = isCandle ? 8 : 64
+  const shownConcurrency = Math.min(concurrency, maxConcurrency)
+
   const isRunning = useMemo(() => {
     if (!snapshot) return false
     return snapshot.tasks.some(
@@ -339,17 +347,17 @@ export function DataSourcePanel(): React.JSX.Element {
                 <input
                   type="range"
                   min={1}
-                  max={isCandle ? 8 : 64}
+                  max={maxConcurrency}
                   step={1}
-                  value={concurrency}
+                  value={shownConcurrency}
                   onChange={(e) => patchConfig({ concurrency: clampConcurrency(Number(e.target.value)) })}
                   className="flex-1 accent-[var(--c-accent)]"
                 />
                 <input
                   type="number"
                   min={1}
-                  max={isCandle ? 8 : 64}
-                  value={concurrency}
+                  max={maxConcurrency}
+                  value={shownConcurrency}
                   onChange={(e) => {
                     const v = Number(e.target.value)
                     if (!Number.isFinite(v) || e.target.value === '') return
