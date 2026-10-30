@@ -13,7 +13,11 @@ import { registerSettingsHandlers } from './ipc/settings-handlers'
 import { initDatabases, closeDatabases } from './db/connection'
 
 // 使用独立的用户数据目录，避免与其它同名程序共用 AppData 造成表结构冲突
-app.setPath('userData', join(app.getPath('appData'), 'TraderRewindDesktop'))
+// TR_USER_DATA 仅供开发期自动化使用：把整个 userData 指到别处，测试就不会碰到真实数据
+app.setPath(
+  'userData',
+  process.env.TR_USER_DATA || join(app.getPath('appData'), 'TraderRewindDesktop')
+)
 
 let mainWindow: BrowserWindow | null = null
 

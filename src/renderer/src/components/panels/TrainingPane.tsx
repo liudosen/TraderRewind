@@ -40,6 +40,7 @@ import {
   tradeWindowBlock,
   MAX_TRADE_TAGS,
   MAX_TRADE_TAG_LEN,
+  revealIndexOf,
   type Position
 } from '../../stores/training-store'
 import { ReplayChart } from '../chart/ReplayChart'
@@ -248,6 +249,26 @@ export function TrainingPane(): React.JSX.Element {
   const resetSession = useTrainingStore((s) => s.resetSession)
   const focusTrade = useTrainingStore((s) => s.focusTrade)
   const setFocusedTrade = useTrainingStore((s) => s.setFocusedTrade)
+  const focusNote = useTrainingStore((s) => s.focusNote)
+  const clearFocusNote = useTrainingStore((s) => s.clearFocusNote)
+
+  /**
+   * 当前允许图表显示到哪一根 K 线（含）：回放没走完就是游标那根。
+   *
+   * 这一条是全场的统一口径 —— 图表定位、订单跳转、报告跳转都认它，
+   * 不许任何一条路径越过游标去展示还没走到的行情。
+   */
+  const revealIndex = useMemo(
+    () => revealIndexOf(bars, cursor, completedAt),
+    [bars, cursor, completedAt]
+  )
+
+  /** 「这笔单暂不定位」的提示只闪一下，别一直挂在那儿 */
+  useEffect(() => {
+    if (!focusNote) return
+    const timer = setTimeout(() => clearFocusNote(), 4500)
+    return () => clearTimeout(timer)
+  }, [focusNote, clearFocusNote])
 
   /** 订单时间按当前生效时区显示：历史会话用它自己打单时记录的时区 */
   const timezone = useTimezoneStore((s) => s.effective)
@@ -1622,6 +1643,7 @@ export function TrainingPane(): React.JSX.Element {
                 <ReplayChart
                   bars={bars}
                   cursor={cursor}
+                  revealIndex={revealIndex}
                   positions={positions}
                   activePositionId={activePosition?.id ?? null}
                   onSelectPosition={selectPosition}
@@ -2230,6 +2252,22 @@ export function TrainingPane(): React.JSX.Element {
                 {t('training.initialCapital', { value: money(initialBalance) })}
               </span>
             </div>
+
+            {/* 定位被拦下来的原因：只在这笔单「还没发生」或「不属于这一集」时出现 */}
+            {focusNote && (
+              <div className="flex shrink-0 items-start gap-1.5 border-b border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-1 text-[11px] leading-tight text-amber-400">
+                <AlertTriangle size={12} className="mt-[1px] shrink-0" />
+                <span className="flex-1">
+                  {t(focusNote === 'future' ? 'training.focusFuture' : 'training.focusForeign')}
+                </span>
+                <button
+                  onClick={clearFocusNote}
+                  className="shrink-0 text-[var(--text-faint)] hover:text-[var(--text-primary)]"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            )}
 
             {/* 标签筛选：打过标签才出现，不打标签就完全不占高度 */}
             {tradeTags.tags.length > 0 && (

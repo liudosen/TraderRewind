@@ -136,6 +136,13 @@ export function JournalPane(): React.JSX.Element {
   const jumpToChart = async (trade: ClosedTrade): Promise<void> => {
     if (selectedId == null) return
     await useTrainingStore.getState().openSession(selectedId)
+    /**
+     * 必须确认目标回测集真的打开成功了再定位。
+     * 打开失败（数据集被删、库读不到…）时 activeSession 还是上一个，
+     * 这时候把交易塞进去，图表就会对着一份不相干的 K 线去定位 ——
+     * 价位、时间全对不上，还容易把视野拖到「未来」。
+     */
+    if (useTrainingStore.getState().activeSession?.id !== selectedId) return
     useTrainingStore.getState().focusTrade(trade)
     useAppStore.getState().setActivePane('training')
   }

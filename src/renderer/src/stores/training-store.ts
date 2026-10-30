@@ -152,6 +152,19 @@ export function parseTags(json: string | null | undefined): string[] {
 }
 
 /**
+ * 当前允许图表显示到哪一根 K 线（含），全场唯一口径。
+ *
+ * 回放没走完时，游标之后的 K 线就是「未来」——任何定位（点订单、点报告、
+ * 从日志跳回来…）都不许把它们露出来，否则训练就白打了。
+ * 走到最后一根 / 已标记完成之后，整段都算已发生，随便看。
+ */
+export function revealIndexOf(bars: Bar[], cursor: number, completedAt: number | null): number {
+  if (bars.length === 0) return -1
+  if (completedAt != null) return bars.length - 1
+  return Math.max(0, Math.min(cursor, bars.length - 1))
+}
+
+/**
  * 交叉盘换算用的汇率序列（报价货币 → 美元）。
  *
  * `direct = true` 表示数据源是正向直盘（GBPUSD），汇率 = 收盘价；
@@ -246,6 +259,14 @@ interface TrainingState {
    * 不会触发任何 effect，看着像「点了没反应」。用序号强制重跑。
    */
   focusSeq: number
+  /**
+   * 上一次「定位被拒绝」的原因，null = 没被拒绝过。
+   *
+   * 两种拒绝：`future`（这笔单在游标之后，属于未来）、`foreign`（时间落不到
+   * 当前回测集的 K 线范围里，多半是从别的会话点过来的）。
+   * 只在界面上给一句轻提示，然后就地清掉。
+   */
+  focusNote: 'future' | 'foreign' | null
   /** 回测集完成时间（游标走到区间最后一根后写入） */
   completedAt: number | null
   /**
@@ -310,6 +331,8 @@ interface TrainingState {
 
   setFocusedTrade: (trade: ClosedTrade | null) => void
   focusTrade: (trade: ClosedTrade) => void
+  /** 清掉「定位被拒绝」的提示 */
+  clearFocusNote: () => void
 
   setLot: (lot: number) => void
   /** 开仓：不再限制「已有持仓」，同向加仓、反向对冲都允许 */
@@ -744,6 +767,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   executionCost: { ...DEFAULT_EXECUTION_COST },
   focusedTrade: null,
   focusSeq: 0,
+  focusNote: null,
   completedAt: null,
   openedAtEnd: false,
 
@@ -798,6 +822,16 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   },
 
   openSession: async (sessionId) => {
+    /**
+     * 点的就是当前已经打开的这个回测集：直接返回，什么都不做。
+     *
+     * 以前这里会整段重载——图表被卸载重建、视图弹回默认窗口、回放被暂停、
+     * 未平仓的持仓被清空（持仓不落库）。用户点一下左边列表想「看一眼」，
+     * 结果进度和画面全乱，「点左边的训练集，K 线图直接展示成最开始的位置」
+     * 就是这么来的。同一个会话重开没有任何收益，幂等返回才是对的。
+     */
+    const opened = get().activeSession
+    if (opened?.id === sessionId && get().bars.length > 0) return
     // 指标偏好是用户级配置，还没读就先读，否则会先闪一下空指标
     if (!get().prefsLoaded) await get().loadIndicatorPrefs()
     // 切到另一个会话前，先把当前会话的进度落库
@@ -907,6 +941,11 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
         bars,
         cursor,
         cursorTime: bars[cursor]?.time ?? 0,
+        // 换了回测集，上一集选中的那笔单子必须丢掉：
+        // 否则它的开/关仓价格线会继续画在新会话的图上，价位完全对不上。
+        focusedTrade: null,
+        focusSeq: 0,
+        focusNote: null,
         // 重置 / 回到起点都指「会话开打的那一根」，不是数组第 0 根（前面是预热历史）
         initialCursor: openingIndex,
         playing: false,
@@ -964,6 +1003,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       drawings: [],
       focusedTrade: null,
       focusSeq: 0,
+      focusNote: null,
       completedAt: null,
       openedAtEnd: false,
       playing: false,
@@ -1061,6 +1101,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       cursorTime: bars[start]?.time ?? 0,
       focusedTrade: null,
       focusSeq: 0,
+      focusNote: null,
       completedAt: null,
       // 重置后从起点重放，走到末尾时应该重新自动弹一次报告
       openedAtEnd: false
@@ -1229,10 +1270,37 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
    * 注意：这里**不能动 cursor**。之前是把回放游标倒回这笔单子的开仓位置，
    * 结果图表只画到开仓那根，平仓之后的部分全缺；连线还要往右外推，
    * 看起来就是「定位不准 / 图形溢出」。已完成的回测集本来就该整段 K 线都在。
+   *
+   * 两道闸（所有定位入口都会经过这里，所以闸设在这一层）：
+   *  1) **是不是已经发生过**：回放没走完时，游标之后的 K 线是「未来」，
+   *     这笔单要是落在游标后面就不许定位——否则等于提前剧透，训练失去意义；
+   *  2) **是不是当前回测集**：交易时间落不到已加载 K 线的时间范围里，
+   *     说明它属于别的会话（比如从日志页点过来而目标会话没打开成功），同样不定位。
    */
   focusTrade: (trade) => {
-    if (get().bars.length === 0) return
-    set((s) => ({ focusedTrade: trade, focusSeq: s.focusSeq + 1, playing: false }))
+    const { bars, cursor, completedAt } = get()
+    if (bars.length === 0) return
+
+    const last = revealIndexOf(bars, cursor, completedAt)
+    const firstTime = bars[0].time
+    const lastTime = bars[bars.length - 1].time
+    /** 判「未来」用平仓时间：开平都在游标之后才算越界；跨游标的持仓按已发生处理 */
+    const revealTime = bars[last]?.time ?? firstTime
+
+    if (completedAt == null && trade.exitTime > revealTime) {
+      set({ focusNote: 'future' })
+      return
+    }
+    if (trade.exitTime < firstTime || trade.entryTime > lastTime) {
+      set({ focusNote: 'foreign' })
+      return
+    }
+
+    set((s) => ({ focusedTrade: trade, focusSeq: s.focusSeq + 1, playing: false, focusNote: null }))
+  },
+
+  clearFocusNote: () => {
+    if (get().focusNote != null) set({ focusNote: null })
   },
 
   setLot: (lot) => {

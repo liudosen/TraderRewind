@@ -136,6 +136,9 @@ export const zh = {
   'training.col.pnl': '盈亏',
   'training.rowFocusedHint': '已在图上定位该笔成交 · 再点一次可重新居中',
   'training.rowFocusHint': '点击在 K 线图上定位该笔成交',
+  'training.focusFuture':
+    '这笔成交还在当前回放进度之后，先不定位 —— 免得把还没走到的 K 线露出来',
+  'training.focusForeign': '这笔成交不在当前回测集里，未在图上定位',
   'training.reasonPartial': '减仓',
   'training.reasonManual': '手动',
 
@@ -337,6 +340,9 @@ export const en: Record<keyof typeof zh, string> = {
   'training.col.pnl': 'P&L',
   'training.rowFocusedHint': 'Located on the chart · click again to re-centre',
   'training.rowFocusHint': 'Click to locate this trade on the chart',
+  'training.focusFuture':
+    'This trade is still ahead of the replay position, so the chart stays put — no peeking at future bars',
+  'training.focusForeign': 'This trade is not part of the current session, so it was not located',
   'training.reasonPartial': 'Partial',
   'training.reasonManual': 'Manual',
 

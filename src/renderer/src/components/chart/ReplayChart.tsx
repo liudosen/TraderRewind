@@ -148,6 +148,14 @@ interface ReplayChartProps {
   focusedTrade?: ClosedTrade | null
   /** 定位序号：同一笔交易被反复点选时用它强制重新定位 */
   focusSeq?: number
+  /**
+   * 当前允许显示到哪一根 K 线（含）—— 回放没走完时就是游标那一根。
+   *
+   * 由上层用 `revealIndexOf(bars, cursor, completedAt)` 算好传进来：
+   * 之后所有「把视野挪到某处」的逻辑都拿它当右边界，谁也别想越过游标
+   * 去展示还没走到的 K 线。不传就按整段都可见处理（老行为）。
+   */
+  revealIndex?: number
   /** 点击图表 / 按 Esc 时通知外部清掉聚焦交易 */
   onClearFocus?: () => void
 }
@@ -627,6 +635,7 @@ export function ReplayChart({
   trades,
   focusedTrade,
   focusSeq,
+  revealIndex,
   onClearFocus
 }: ReplayChartProps): React.JSX.Element {
   const { t, locale } = useT()
@@ -1714,6 +1723,19 @@ export function ReplayChart({
     const n = bars.length
     const idxIn = timeToLogical(focusedTrade.entryTime)
     const idxOut = timeToLogical(focusedTrade.exitTime)
+    /**
+     * 可见上限：回放没走完时就是游标那根（revealIndex）。
+     *
+     * 那张固定 150 根的窗口以前是「以订单为中心」铺开的，订单就在游标上时
+     * 右半边（74 根）直接铺到游标之后——屏幕上一片空白加上价格线，
+     * 用户看到的就是「点了订单能看到未来的 K 线」。定位必须以它封顶。
+     */
+    const last = Math.max(0, Math.min(revealIndex ?? n - 1, n - 1))
+    if (idxIn != null && Math.round(idxIn) > last) {
+      // 这笔单在游标之后（或压根不属于这一段），宁可不定位也不许把未来露出来
+      redrawRef.current()
+      return
+    }
     // 以开仓那根为锚点；但这笔单子本身不到一屏时，改用「开→平」的中点，
     // 不然持仓很久的单子只能看到开仓、平仓被挤出屏幕外。
     let anchor = idxIn
@@ -1723,17 +1745,20 @@ export function ReplayChart({
     if (n > 1 && anchor != null) {
       const half = Math.floor(FOCUS_VISIBLE_BARS / 2)
       const span = FOCUS_VISIBLE_BARS - 1
-      let from = Math.round(anchor) - half
+      // 锚点本身也不许越过上限（跨游标持仓取中点时可能出现）
+      const a = Math.min(anchor, last)
+      let from = Math.round(a) - half
       let to = from + span
       // 贴着开头：整体右移，跨度不变（否则前几笔只能看到半屏）
       if (from < 0) {
         to -= from
         from = 0
       }
-      // 贴着结尾：整体左移
-      if (to > n - 1) {
-        from = Math.max(0, from - (to - (n - 1)))
-        to = n - 1
+      // 贴着「当前可见上限」：整体左移，跨度不变
+      // —— 认的是 last（游标），不是 n-1（整段数据的末尾）
+      if (to > last) {
+        from = Math.max(0, from - (to - last))
+        to = last
       }
 
       // 这里故意不盖 autoRangeAtRef 的时间戳：定位之后的这一屏就是用户当下在看的窗口，
@@ -1741,7 +1766,7 @@ export function ReplayChart({
       chart.timeScale().setVisibleLogicalRange({ from, to })
     }
     redrawRef.current()
-  }, [focusedTrade?.id, focusSeq, bars.length, timeToLogical, t])
+  }, [focusedTrade?.id, focusSeq, bars.length, revealIndex, timeToLogical, t])
 
   // ---------- 交互：画线 + SL/TP 拖拽 ----------
   useEffect(() => {
