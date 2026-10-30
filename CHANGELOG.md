@@ -5,11 +5,16 @@
 
 ## [Unreleased]
 
+暂时没有待发布的改动。
+
+## [0.2.1] - 2026-10-30
+
 ### 修复
 
 - 标签多选由「或」改为「且」：一笔交易要带上所有选中的标签才显示。
   以前点亮第二个标签会把只带其中一个的新单子也带出来，结果越筛越多，
   与「在已筛出的结果里再收窄一层」的预期相反
+- 筛选条末尾的说明随之改为「多选 N · 同时命中」，空结果提示点名「没有命中 A 且 B」
 
 ## [0.2.0] - 2026-10-30
 
@@ -63,6 +68,7 @@
 - OKX 与 Binance 的接口在中国大陆直连需要代理
 - 加密数据源的 1 分钟历史深度受交易所限制，越久远的区间越容易抓空
 
-[Unreleased]: https://github.com/liudosen/TraderRewind/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/liudosen/TraderRewind/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/liudosen/TraderRewind/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/liudosen/TraderRewind/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/liudosen/TraderRewind/releases/tag/v0.1.0
