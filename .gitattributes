@@ -1,0 +1,37 @@
+# 默认：文本文件一律 LF，仓库内不随操作系统漂移
+* text=auto eol=lf
+
+# 源码
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+*.json text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Windows 脚本必须 CRLF，否则 cmd 解析出错
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制：不参与 diff，不做换行转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.icns binary
+*.svg  text eol=lf
+*.exe  binary
+*.dll  binary
+*.node binary
+*.db   binary
+*.bi5  binary
+*.asar binary
+
+# 锁文件：合并时容易冲突且无意义，交给 npm 重新生成
+package-lock.json merge=binary -diff

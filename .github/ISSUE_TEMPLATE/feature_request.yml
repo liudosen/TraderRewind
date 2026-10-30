@@ -1,0 +1,72 @@
+name: 功能建议
+description: 想要新功能、想改现有交互，在这里说
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提建议时最有用的信息不是「我想要什么按钮」，而是**你现在卡在哪一步**。
+        先说清问题，再说方案，我们才好在同一个层面上讨论。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过已有 Issue 和 README 的功能列表，没有重复
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的问题
+      description: 描述场景，不要先讲方案
+      placeholder: |
+        我每天复盘要做 20 笔单子，现在一笔一笔点开日志很慢，
+        希望能按标签批量筛出来一起看。
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 你希望的解决方式
+      description: 有具体想法就说，没有也可以只写问题
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你考虑过的替代方案
+      description: 现在是怎么绕过这个问题的？
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 相关模块
+      multiple: true
+      options:
+        - 工作台 Dashboard
+        - 数据源下载
+        - 训练回放
+        - 图表与绘图工具
+        - 技术指标
+        - 训练报告
+        - 日志与标签
+        - 设置 / 外观
+        - 安装与打包
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 参考截图、其它软件的类似做法、相关链接
+    validations:
+      required: false

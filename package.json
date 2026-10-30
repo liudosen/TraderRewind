@@ -1,0 +1,75 @@
+{
+  "name": "traderrewind",
+  "version": "0.1.0",
+  "description": "TraderRewind — 历史行情回放与交易训练工具",
+  "main": "./out/main/index.js",
+  "author": "liudosen",
+  "license": "Apache-2.0",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liudosen/TraderRewind.git"
+  },
+  "homepage": "https://github.com/liudosen/TraderRewind#readme",
+  "bugs": {
+    "url": "https://github.com/liudosen/TraderRewind/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "trading",
+    "backtesting",
+    "market-replay",
+    "forex",
+    "crypto",
+    "electron",
+    "chart",
+    "trading-simulator"
+  ],
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "icons": "node scripts/make-icons.mjs",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "package": "electron-vite build && electron-builder",
+    "package:win": "electron-vite build && electron-builder --win",
+    "package:mac": "electron-vite build && electron-builder --mac"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "clsx": "^2.1.1",
+    "lightweight-charts": "^5.1.0",
+    "lucide-react": "^0.451.0",
+    "lzma": "^2.3.2",
+    "papaparse": "^5.4.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-hotkeys-hook": "^4.5.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@electron-toolkit/utils": "^3.0.0",
+    "@electron/rebuild": "^4.2.1",
+    "@esbuild/win32-x64": "^0.28.2",
+    "@rollup/rollup-win32-x64-msvc": "^4.66.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.10.0",
+    "@types/papaparse": "^5.3.15",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "postcss": "^8.4.49",
+    "sharp": "^0.35.5",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

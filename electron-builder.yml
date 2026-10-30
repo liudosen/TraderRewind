@@ -1,0 +1,28 @@
+appId: com.traderrewind.app
+productName: TraderRewind
+directories:
+  output: release
+  buildResources: build
+# better-sqlite3 是原生模块，package.json 的 postinstall 已经跑过
+# electron-rebuild 把它编成 Electron 的 ABI 了。这里再让 electron-builder
+# 重编一遍纯属重复劳动，而且在 Windows 上它清理旧 .node 时会走 trash 操作，
+# 某些环境（受限的删除权限）会直接失败。所以交给 postinstall 独家负责。
+npmRebuild: false
+files:
+  - out/**/*
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  icon: build/icon.icns
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false

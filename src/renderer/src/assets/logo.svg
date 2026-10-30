@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TraderRewind 品牌标识（32×32 网格，可任意缩放）
+
+  设计：三根上升的蜡烛，左边暗、右边亮 —— 明暗渐变就是「倒带」：从过去的行情
+  一路点回现在。只用蜡烛不用箭头，是因为箭头在 16px 下会退化成「返回按钮」，
+  失去交易软件的识别度；而 K 线的侧影在任何尺寸下都还认得出来。
+
+  这个文件是唯一真源：侧边栏直接引用它，build/icon.png 与 build/icon.ico
+  也由它生成（见 scripts/make-icons.mjs）。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="tr-tile" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0%" stop-color="#2a2140"/>
+      <stop offset="55%" stop-color="#17131f"/>
+      <stop offset="100%" stop-color="#0f0d14"/>
+    </linearGradient>
+    <radialGradient id="tr-glow" cx="0.18" cy="0.12" r="0.85">
+      <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.28"/>
+      <stop offset="60%" stop-color="#a78bfa" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 底板 -->
+  <rect width="32" height="32" rx="8" fill="url(#tr-tile)"/>
+  <rect width="32" height="32" rx="8" fill="url(#tr-glow)"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="none"
+        stroke="#ffffff" stroke-opacity="0.08"/>
+
+  <!-- 三根蜡烛：暗 → 亮 -->
+  <g>
+    <rect x="7.3" y="13.4" width="1.6" height="13.2" rx="0.8" fill="#7c3aed"/>
+    <rect x="5.8" y="16.6" width="4.6" height="7.1" rx="1.2" fill="#7c3aed"/>
+
+    <rect x="14.3" y="7.9" width="1.6" height="14.2" rx="0.8" fill="#a78bfa"/>
+    <rect x="12.8" y="11.2" width="4.6" height="8.2" rx="1.2" fill="#a78bfa"/>
+
+    <rect x="21.3" y="4.4" width="1.6" height="13.6" rx="0.8" fill="#ede9fe"/>
+    <rect x="19.8" y="7.4" width="4.6" height="7.6" rx="1.2" fill="#ede9fe"/>
+  </g>
+</svg>

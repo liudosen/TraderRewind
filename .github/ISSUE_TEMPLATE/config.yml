@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题（请勿公开提问）
+    url: https://github.com/liudosen/TraderRewind/security/advisories/new
+    about: 能读到不该读的数据、能执行任意代码之类的漏洞，请走私密报告通道。
+  - name: 使用问题与讨论
+    url: https://github.com/liudosen/TraderRewind/discussions
+    about: 装不上、不会用、想聊聊思路，去 Discussions 更合适，不要开 Issue。
+  - name: 先读贡献指南
+    url: https://github.com/liudosen/TraderRewind/blob/main/CONTRIBUTING.md
+    about: 打算自己改代码提 PR 的话，先看这里的分支与提交规范。

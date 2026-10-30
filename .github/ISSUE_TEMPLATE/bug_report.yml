@@ -1,0 +1,101 @@
+name: 缺陷报告
+description: 界面不对、功能不工作、程序崩溃，都可以在这里报
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量把信息填全 —— 缺 OS 版本和复现步骤的报告，基本没法定位。
+
+        **如果是安全问题（能读到不该读的数据、能执行任意代码），请不要在这里提**，
+        请按 [安全策略](https://github.com/liudosen/TraderRewind/blob/main/SECURITY.md) 私下联系。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过已有 Issue，没有重复
+          required: true
+        - label: 我用的是最新版本（或 main 分支最新代码）
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 实际发生了什么？和你预期的不一样在哪？
+      placeholder: |
+        我点「开始下载」之后进度条一直是 0%，等了 5 分钟也没动静。
+        预期应该像文档里那样开始跑。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动软件开始，一步一步写清楚。能稳定复现最重要。
+      placeholder: |
+        1. 打开「数据源」页
+        2. 切到 Binance
+        3. 展开「加密市场」，勾选 BTCUSDT
+        4. 时间范围选最近 7 天
+        5. 点「开始下载」
+        6. 进度条停在 0%
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响的功能
+      multiple: true
+      options:
+        - 工作台 Dashboard
+        - 数据源下载
+        - 训练回放
+        - 图表与绘图工具
+        - 技术指标
+        - 训练报告
+        - 日志与标签
+        - 设置 / 外观
+        - 安装与打包
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 见「设置」页底部，或安装包文件名
+      placeholder: 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: Windows 11 23H2 / macOS 14.5 / Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错信息或日志
+      description: 界面上的红色报错、开发者工具 Console 的报错、或终端输出
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图
+      description: 直接把图片拖进来，比文字描述省事得多
+    validations:
+      required: false

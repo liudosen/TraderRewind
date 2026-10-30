@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface-0: #0b0b0b;
+  --surface-1: #111111;
+  --surface-2: #1a1a1a;
+  --surface-3: #222222;
+  --surface-4: #2a2a2a;
+  --surface-5: #333333;
+  --border-subtle: #2a2a2a;
+  --border-strong: #444444;
+  --text-primary: #e5e5e5;
+  --text-secondary: #a3a3a3;
+  --text-muted: #737373;
+  --text-faint: #525252;
+  --c-accent: #8b5cf6;
+  --c-accent-tint: rgba(139, 92, 246, 0.12);
+  --c-accent-border: rgba(139, 92, 246, 0.3);
+  --c-pos: #22c55e;
+  --c-pos-tint: rgba(34, 197, 94, 0.12);
+  --c-neg: #ef4444;
+  --c-neg-tint: rgba(239, 68, 68, 0.12);
+  --hub-brand: #26a69a;
+  --hub-brand-soft: rgba(38, 166, 154, 0.15);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  overflow: hidden;
+  user-select: none;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-4);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--surface-5);
+}
+
+/* 下载进度条的流动条纹 */
+/* 用 transform 位移替代 background-position，避免逐帧重绘 */
+.progress-stripes {
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-stripes::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -14px;
+  width: calc(100% + 28px);
+  pointer-events: none;
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.16) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.16) 50%,
+    rgba(255, 255, 255, 0.16) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 14px 14px;
+  animation: progress-stripe-move 0.8s linear infinite;
+  will-change: transform;
+}
+
+@keyframes progress-stripe-move {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(14px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-stripes {
+    animation: none;
+  }
+}
+
+/* 隐藏 lightweight-charts 左下角的 TradingView logo */
+#tv-attr-logo {
+  display: none !important;
+}
+
+/* 数字等宽，避免速度刷新时抖动 */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   顶部标题栏拖拽区
+   原生标题栏已经藏掉（见 main/index.ts 的 titleBarStyle），
+   这块 36px 的条就是窗口的「标题栏」：按住能拖，双击能最大化。
+   ============================================================ */
+.title-bar {
+  -webkit-app-region: drag;
+}
+
+/* 条上的可交互元素必须排除，否则点不动 */
+.title-bar button,
+.title-bar a,
+.title-bar input,
+.title-bar select,
+.title-bar [role='button'] {
+  -webkit-app-region: no-drag;
+}

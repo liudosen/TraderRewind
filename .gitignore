@@ -1,0 +1,19 @@
+node_modules/
+out/
+dist/
+release/
+# electron-builder 换输出目录打包时留下的副本
+release-*/
+*.log
+.DS_Store
+Thumbs.db
+*.local
+
+# WorkBuddy 的本地工作数据（记忆、会话、技能），不进仓库
+.workbuddy/
+
+# 本地数据库与导出
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
