@@ -7,6 +7,25 @@
 
 暂时没有待发布的改动。
 
+## [0.2.3] - 2026-10-30
+
+### 修复
+
+- **下载中途永久卡住**：进度条停在某个百分比不再前进，状态仍显示「下载中」，
+  但进程 CPU 归零、一条网络连接都没有。原因是 bi5 解码线程死掉后（被 OOM 杀掉、
+  或 LZMA 解压异常），线程池没有把该线程手上的任务 reject 掉，那个 `await`
+  永远不返回，整个下载作业跟着挂死。
+  - 监听线程退出事件，统一做「reject 在途任务 → 摘掉死线程 → 补一个新线程」
+  - 每个任务派发后挂 60 秒看门狗，线程既不报错也不返回时兜底
+  - 线程重建失败则整池退回主线程解码，绝不挂住调用方
+- **被数据源限流时界面像卡死**：Dukascopy 返回 429 时，每个下载线程各自退避最多 15 秒，
+  64 路一起睡，于是 CPU 归零、连接归零、进度纹丝不动。现在：
+  - 全体共享一个冷却窗口，同一时刻只等一次
+  - 并发自适应折半（下限 4），退到数据源受得了的速度
+  - 状态文案写明「数据源限流（429）：并发 X → Y，等待 N 秒后继续」，
+    让用户看到是在等而不是以为程序死了
+  - 持续限流的放弃阈值从 15 次提到 40 次（现在会先降速，不必那么快放弃）
+
 ## [0.2.2] - 2026-10-30
 
 ### 修复
@@ -83,7 +102,8 @@
 - OKX 与 Binance 的接口在中国大陆直连需要代理
 - 加密数据源的 1 分钟历史深度受交易所限制，越久远的区间越容易抓空
 
-[Unreleased]: https://github.com/liudosen/TraderRewind/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/liudosen/TraderRewind/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/liudosen/TraderRewind/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/liudosen/TraderRewind/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/liudosen/TraderRewind/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/liudosen/TraderRewind/compare/v0.1.0...v0.2.0

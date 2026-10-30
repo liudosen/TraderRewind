@@ -1,6 +1,6 @@
 {
   "name": "traderrewind",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "TraderRewind — 历史行情回放与交易训练工具",
   "main": "./out/main/index.js",
   "author": "liudosen",
