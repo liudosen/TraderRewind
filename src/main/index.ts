@@ -10,6 +10,8 @@ import { registerFileHandlers } from './ipc/file-handlers'
 import { registerWindowHandlers } from './ipc/window-handlers'
 import { registerDataHandlers } from './ipc/data-handlers'
 import { registerSettingsHandlers } from './ipc/settings-handlers'
+import { registerUpdateHandlers } from './ipc/update-handlers'
+import { scheduleStartupCheck } from './services/updater'
 import { initDatabases, closeDatabases } from './db/connection'
 
 // 使用独立的用户数据目录，避免与其它同名程序共用 AppData 造成表结构冲突
@@ -145,8 +147,16 @@ if (!gotTheLock) {
     registerWindowHandlers(() => mainWindow)
     registerDataHandlers()
     registerSettingsHandlers()
+    registerUpdateHandlers()
 
     createWindow()
+
+    /**
+     * 开机顺手查一次版本：延迟 8 秒，等首屏、数据库、图表都就绪之后再说。
+     * 查到新版会自动开始下载（界面右上角显示进度），下载完停在「可以安装」，
+     * 真正安装要点一下——用户手上可能在打单，不能直接把他踢下线。
+     */
+    scheduleStartupCheck()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

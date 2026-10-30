@@ -200,6 +200,8 @@ export const IPC = {
   UPDATE_STATUS: 'update:status',
   UPDATE_DOWNLOAD: 'update:download',
   UPDATE_INSTALL: 'update:install',
+  /** 打不开自动更新时的兜底：直接跳到 GitHub 发布页 */
+  UPDATE_OPEN_RELEASE_PAGE: 'update:openReleasePage',
 
   // ----- 数据库: 存储 -----
   DB_PERSISTENCE_RELEASE: 'db:persistenceRead:release'

@@ -4,6 +4,7 @@ import { useChartThemeStore } from './stores/chart-theme-store'
 import { useTimezoneStore } from './stores/timezone-store'
 import { useLocaleStore } from './i18n'
 import { useTrainingStore } from './stores/training-store'
+import { useUpdateStore } from './stores/update-store'
 import { Sidebar } from './components/common/Sidebar'
 import { TitleBar } from './components/common/TitleBar'
 import { HubPane } from './components/panels/HubPane'
@@ -26,6 +27,15 @@ export default function App(): React.JSX.Element {
     void useTrainingStore.getState().loadTagLibrary()
     // 交易成本模型（手续费 + 滑点）：下单/平仓时按它算成交价和佣金
     void useTrainingStore.getState().loadExecutionCost()
+  }, [])
+
+  /**
+   * 版本更新：开机时主进程已经查过一次，这里把状态拉回来并订阅后续广播。
+   * 更新状态放在主进程，所以哪怕现在不在设置页，下载进度也一直在走。
+   */
+  useEffect(() => {
+    void useUpdateStore.getState().load()
+    return useUpdateStore.getState().bind()
   }, [])
 
   return (

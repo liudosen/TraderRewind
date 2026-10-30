@@ -102,6 +102,15 @@ const api = {
   isMaximized: () => ipcRenderer.invoke(IPC.WINDOW_IS_MAXIMIZED),
   refocusAfterDialog: () => ipcRenderer.invoke(IPC.WINDOW_REFOCUS),
 
+  // ----- 更新（GitHub Release） -----
+  /** 主动检查；`autoDownload` 为 true 时发现新版立刻开始下载 */
+  checkUpdate: (opts?: { autoDownload?: boolean }) =>
+    ipcRenderer.invoke(IPC.UPDATE_CHECK, opts),
+  getUpdateState: () => ipcRenderer.invoke(IPC.UPDATE_GET_STATE),
+  downloadUpdate: () => ipcRenderer.invoke(IPC.UPDATE_DOWNLOAD),
+  installUpdate: () => ipcRenderer.invoke(IPC.UPDATE_INSTALL),
+  openReleasePage: () => ipcRenderer.invoke(IPC.UPDATE_OPEN_RELEASE_PAGE),
+
   // ----- 事件监听 -----
   on: (channel: string, callback: (...args: any[]) => void) => {
     const subscription = (_event: Electron.IpcRendererEvent, ...args: any[]) => callback(...args)

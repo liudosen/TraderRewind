@@ -13,7 +13,10 @@ import {
   Settings2,
   Clock,
   CandlestickChart,
-  Activity
+  Activity,
+  Download,
+  ArrowUpRight,
+  RefreshCw
 } from 'lucide-react'
 import clsx from 'clsx'
 import { formatBytes } from '../../utils/format'
@@ -21,6 +24,7 @@ import { useT, useLocaleStore, translateLabel, type MessageKey } from '../../i18
 import { useChartThemeStore } from '../../stores/chart-theme-store'
 import { useTimezoneStore } from '../../stores/timezone-store'
 import { useTrainingStore } from '../../stores/training-store'
+import { updatePercent, useUpdateStore } from '../../stores/update-store'
 import { indicatorTitle } from '@shared/utils/indicators'
 import { MAX_TAG_LIBRARY, MAX_TRADE_TAG_LEN } from '@shared/types/trade-tags'
 import {
@@ -644,6 +648,10 @@ export function SettingsPanel(): React.JSX.Element {
               full
             />
           </Section>
+
+          <div className="mt-4">
+            <UpdateCard />
+          </div>
         </div>
       </div>
     </div>
@@ -855,6 +863,179 @@ function Row({
       >
         {value}
       </span>
+    </div>
+  )
+}
+
+/**
+ * 版本更新卡片。
+ *
+ * 状态全在主进程（`useUpdateStore` 只是订阅），所以在这里点「检查更新」、
+ * 切到别的页面、回来看到「下载中 62%」—— 进度一直在走，不会重来。
+ *
+ * 布局按「一眼能判断现在该干什么」来排：左边当前版本、右边最新版本，
+ * 中间一条进度条，底下一排按钮（只有该出现的才出现）。
+ */
+function UpdateCard(): React.JSX.Element {
+  const { t } = useT()
+  const state = useUpdateStore()
+  const percent = updatePercent(state)
+  const busy = state.phase === 'checking' || state.phase === 'downloading' || state.phase === 'installing'
+  const hasNewer = state.latestVersion != null && state.phase !== 'uptodate'
+
+  /** 发布说明按纯文本显示：release body 是 markdown，原样渲染会看到一堆井号和星号 */
+  const notes = (state.notes ?? '').trim()
+
+  return (
+    <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-1)] p-3.5">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--c-accent-tint)] text-[var(--c-accent)]">
+          <Download size={14} />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12px] font-semibold text-[var(--text-primary)]">
+              {t('settings.update.title')}
+            </span>
+            {/* 状态徽标：一行字说明现在是什么情况 */}
+            <span
+              className={clsx(
+                'rounded-full px-1.5 py-px text-[10px] font-medium',
+                state.phase === 'error'
+                  ? 'bg-[var(--c-neg-tint)] text-[var(--c-neg)]'
+                  : state.phase === 'ready'
+                    ? 'bg-[var(--c-pos-tint)] text-[var(--c-pos)]'
+                    : state.phase === 'available' || state.phase === 'downloading'
+                      ? 'bg-[var(--c-accent-tint)] text-[var(--c-accent)]'
+                      : 'bg-[var(--surface-3)] text-[var(--text-muted)]'
+              )}
+            >
+              {t(`settings.update.phase.${state.phase}` as MessageKey)}
+            </span>
+          </div>
+
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--text-muted)]">
+            <span className="font-mono text-[var(--text-secondary)]">
+              {state.currentVersion || __APP_VERSION__}
+            </span>
+            {hasNewer && (
+              <>
+                <span className="text-[var(--text-faint)]">→</span>
+                <span className="font-mono font-semibold text-[var(--c-accent)]">
+                  {state.latestVersion}
+                </span>
+              </>
+            )}
+            {state.checkedAt != null && (
+              <span className="text-[var(--text-faint)]">
+                · {t('settings.update.checkedAt', { time: new Date(state.checkedAt).toLocaleTimeString() })}
+              </span>
+            )}
+          </div>
+
+          {/* 进度条：只在下载中出现，避免静态时多一条线 */}
+          {state.phase === 'downloading' && (
+            <div className="mt-2">
+              <div className="h-1.5 overflow-hidden rounded-full bg-[var(--surface-3)]">
+                <div
+                  className="h-full rounded-full bg-[var(--c-accent)] transition-[width] duration-200"
+                  style={{ width: `${percent ?? 0}%` }}
+                />
+              </div>
+              <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-[var(--text-faint)]">
+                <span>
+                  {percent != null
+                    ? t('settings.update.progress', { percent })
+                    : t('settings.update.downloading')}
+                </span>
+                <span>
+                  {formatBytes(state.received)}
+                  {state.total > 0 ? ` / ${formatBytes(state.total)}` : ''}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {state.error && (
+            <p className="mt-1.5 flex items-start gap-1 text-[10.5px] leading-tight text-[var(--c-neg)]">
+              <AlertCircle size={11} className="mt-[1px] shrink-0" />
+              <span>{state.error}</span>
+            </p>
+          )}
+
+          {/* 发布说明：下载好才展开，平时折叠，避免长文把设置页撑爆 */}
+          {notes && (state.phase === 'available' || state.phase === 'ready') && (
+            <details className="mt-2 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-0)] px-2.5 py-1.5">
+              <summary className="cursor-pointer text-[10.5px] text-[var(--text-muted)]">
+                {t('settings.update.notes')}
+              </summary>
+              <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-sans text-[10.5px] leading-relaxed text-[var(--text-secondary)]">
+                {notes}
+              </pre>
+            </details>
+          )}
+
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            {/* 主按钮：状态决定它是什么（能装就装、能下就下） */}
+            {state.phase === 'ready' ? (
+              <button
+                onClick={() => void state.install()}
+                disabled={!state.installable}
+                title={state.installable ? undefined : t('settings.update.devMode')}
+                className={clsx(
+                  'flex items-center gap-1 rounded-md px-2.5 py-1 text-[11.5px] font-medium transition-colors',
+                  state.installable
+                    ? 'bg-[var(--c-accent)] text-white hover:opacity-90'
+                    : 'cursor-not-allowed bg-[var(--surface-3)] text-[var(--text-faint)]'
+                )}
+              >
+                <RotateCcw size={12} />
+                {t('settings.update.installNow')}
+              </button>
+            ) : (state.phase === 'available' || state.phase === 'error') && state.assetName ? (
+              <button
+                onClick={() => void state.download()}
+                className="flex items-center gap-1 rounded-md bg-[var(--c-accent)] px-2.5 py-1 text-[11.5px] font-medium text-white transition-opacity hover:opacity-90"
+              >
+                <Download size={12} />
+                {t('settings.update.download')}
+              </button>
+            ) : null}
+
+            {/* 次按钮：任何时候都能再查一遍（下载中/检查中除外） */}
+            <button
+              onClick={() => void state.check()}
+              disabled={busy}
+              className={clsx(
+                'flex items-center gap-1 rounded-md border border-[var(--border-strong)] px-2.5 py-1 text-[11.5px] transition-colors',
+                busy
+                  ? 'cursor-not-allowed text-[var(--text-faint)]'
+                  : 'text-[var(--text-secondary)] hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]'
+              )}
+            >
+              {state.phase === 'checking' ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <RefreshCw size={12} />
+              )}
+              {t('settings.update.check')}
+            </button>
+
+            <button
+              onClick={() => void state.openReleasePage()}
+              className="ml-auto flex items-center gap-0.5 text-[11px] text-[var(--text-faint)] transition-colors hover:text-[var(--text-primary)]"
+            >
+              {t('settings.update.releasePage')}
+              <ArrowUpRight size={11} />
+            </button>
+          </div>
+
+          {!state.installable && state.phase === 'ready' && (
+            <p className="mt-1 text-[10px] text-[var(--text-faint)]">{t('settings.update.devMode')}</p>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

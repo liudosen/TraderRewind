@@ -1,7 +1,10 @@
 import React from 'react'
 import clsx from 'clsx'
+import { AlertCircle, ArrowDownToLine, Loader2 } from 'lucide-react'
 import { Logo } from './Logo'
 import { useT, useLocaleStore } from '../../i18n'
+import { useAppStore } from '../../stores/app-store'
+import { needsAttention, updatePercent, useUpdateStore } from '../../stores/update-store'
 import { LOCALE_OPTIONS, type Locale } from '@shared/types/locale'
 
 /**
@@ -36,10 +39,74 @@ export function TitleBar(): React.JSX.Element {
         TraderRewind
       </span>
 
-      <div className="ml-auto flex items-center pr-1" title={t('title.language')}>
-        <LanguageToggle value={locale} onChange={(next) => void setLocale(next)} />
+      <div className="ml-auto flex items-center gap-2 pr-1">
+        <UpdatePill />
+        <div title={t('title.language')}>
+          <LanguageToggle value={locale} onChange={(next) => void setLocale(next)} />
+        </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * 标题栏的更新提示。
+ *
+ * 只在这几种时候出现：查到新版 / 正在下载 / 下载完可以装 / 检查失败。
+ * 平时（idle、检查中、已是最新）完全不占位置——标题栏本来就很挤。
+ * 点它一律跳到「设置 → 通用 → 关于」，那里有版本明细和完整按钮。
+ */
+function UpdatePill(): React.JSX.Element | null {
+  const { t } = useT()
+  const state = useUpdateStore()
+  const setActivePane = useAppStore((s) => s.setActivePane)
+  const percent = updatePercent(state)
+
+  if (!needsAttention(state) && state.phase !== 'installing') return null
+  if (state.latestVersion && state.dismissedVersion === state.latestVersion) return null
+
+  const label = (() => {
+    switch (state.phase) {
+      case 'available':
+        return t('update.pillAvailable', { version: state.latestVersion ?? '' })
+      case 'downloading':
+        return percent != null
+          ? t('update.pillDownloading', { percent })
+          : t('update.pillDownloadingUnknown')
+      case 'ready':
+        return t('update.pillReady', { version: state.latestVersion ?? '' })
+      case 'installing':
+        return t('update.pillInstalling')
+      default:
+        return t('update.pillError')
+    }
+  })()
+
+  const tone =
+    state.phase === 'error'
+      ? 'text-[var(--c-neg)] border-[var(--c-neg)]/40 bg-[var(--c-neg-tint)]'
+      : state.phase === 'ready'
+        ? 'text-[var(--c-pos)] border-[var(--c-pos)]/40 bg-[var(--c-pos-tint)]'
+        : 'text-[var(--c-accent)] border-[var(--c-accent)]/40 bg-[var(--c-accent-tint)]'
+
+  return (
+    <button
+      onClick={() => setActivePane('settings')}
+      title={t('update.pillHint')}
+      className={clsx(
+        'flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-opacity hover:opacity-80',
+        tone
+      )}
+    >
+      {state.phase === 'downloading' ? (
+        <Loader2 size={10} className="animate-spin" />
+      ) : state.phase === 'error' ? (
+        <AlertCircle size={10} />
+      ) : (
+        <ArrowDownToLine size={10} />
+      )}
+      <span className="max-w-[220px] truncate">{label}</span>
+    </button>
   )
 }
 
