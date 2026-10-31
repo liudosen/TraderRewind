@@ -27,7 +27,8 @@ import {
   Type,
   Waypoints,
   RotateCcw,
-  AlertTriangle
+  AlertTriangle,
+  ArrowLeft
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useHotkeys } from 'react-hotkeys-hook'
@@ -48,6 +49,7 @@ import { useTrainingClock } from '../../hooks/use-training-clock'
 import { DateRangePicker } from '../common/DateRangePicker'
 import { TagFilter, useTagFilter } from '../common/TagFilter'
 import { TrainingReport } from './TrainingReport'
+import { useAppStore } from '../../stores/app-store'
 import {
   BASE_TIMEFRAMES,
   DEFAULT_TOOLBAR_TIMEFRAMES,
@@ -255,6 +257,15 @@ export function TrainingPane(): React.JSX.Element {
   const setFocusedTrade = useTrainingStore((s) => s.setFocusedTrade)
   const focusNote = useTrainingStore((s) => s.focusNote)
   const clearFocusNote = useTrainingStore((s) => s.clearFocusNote)
+
+  /**
+   * 是不是「从日志点某笔交易跳过来的」。
+   * 是的话顶栏挂一个高亮的「返回日志」，让人一眼看到回头路怎么走。
+   */
+  const journalReturn = useAppStore((s) => s.journalReturn)
+  const backToJournal = useCallback(() => {
+    useAppStore.getState().setActivePane('journal')
+  }, [])
 
   /**
    * 当前允许图表显示到哪一根 K 线（含）：回放没走完就是游标那根。
@@ -1496,6 +1507,24 @@ export function TrainingPane(): React.JSX.Element {
                 <CheckCircle2 size={9} />
                 {t('journal.done')}
               </span>
+            )}
+
+            {/* 从日志跳过来的：给一条显眼的回头路（用主色 + 呼吸光环，压过旁边的普通按钮） */}
+            {journalReturn && (
+              <button
+                onClick={backToJournal}
+                title={t('training.backToJournalHint')}
+                className={clsx(
+                  // 实心主色：旁边都是描边按钮，只有它是填实的，一眼就能找到回头路
+                  'flex shrink-0 items-center gap-1 rounded-md bg-[var(--c-accent)] px-2 py-1 text-[11.5px] font-medium text-white shadow-sm transition-opacity hover:opacity-90',
+                  // 只闪两下就停，别一直晃着眼睛
+                  'animate-[trBackPulse_1.1s_ease-in-out_2]',
+                  barNarrow && 'px-1.5'
+                )}
+              >
+                <ArrowLeft size={12} />
+                {!barNarrow && t('training.backToJournal')}
+              </button>
             )}
 
             <button

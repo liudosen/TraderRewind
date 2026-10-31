@@ -9,6 +9,7 @@ import { getMarketDb, getTrainingDb } from '../db/connection'
 import { loadSettings } from '../settings'
 import { fmtTzDateTime, normalizeTimezone } from '@shared/types/timezone'
 import { serializeTradeWindow } from '@shared/types/trade-window'
+import { normalizeTags } from '@shared/types/trade-tags'
 
 export function registerDbHandlers(): void {
   /** 行情库 */
@@ -304,6 +305,25 @@ export function registerDbHandlers(): void {
     // TODO: 聚合 sessions + imported_trades
     return []
   })
+
+  /**
+   * 日志页里编辑一笔交易的「思路 / 备注」和标签。
+   *
+   * 只动 notes 与 tags_json 两列：成交价、盈亏、时间这些是回放当场算出来的，
+   * 事后改就等于改成绩，一律不允许。两列一起写，避免「备注改了标签没改」的半截状态。
+   */
+  ipcMain.handle(
+    IPC.DB_UPDATE_CLOSED_TRADE_META,
+    (_e, sessionId: number, tradeId: string, meta: { note?: string | null; tags?: string[] }) => {
+      const note = typeof meta?.note === 'string' ? meta.note : null
+      const tags = normalizeTags(meta?.tags ?? [])
+      const tagsJson = tags.length > 0 ? JSON.stringify(tags) : null
+      const res = t()
+        .prepare('UPDATE closed_trades SET notes = ?, tags_json = ? WHERE session_id = ? AND id = ?')
+        .run(note, tagsJson, sessionId, tradeId)
+      return res.changes > 0
+    }
+  )
 
   // ----- 账户（训练库） -----
   ipcMain.handle(IPC.DB_LIST_ACCOUNTS, () => {

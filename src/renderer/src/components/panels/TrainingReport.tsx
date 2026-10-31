@@ -1,5 +1,14 @@
 import React, { useMemo } from 'react'
-import { X, TrendingUp, Target, Activity, AlertTriangle, ArrowUpRight, ArrowDownRight } from 'lucide-react'
+import {
+  X,
+  TrendingUp,
+  Target,
+  Activity,
+  AlertTriangle,
+  ArrowUpRight,
+  ArrowDownRight,
+  Pencil
+} from 'lucide-react'
 import clsx from 'clsx'
 import type { ClosedTrade } from '../../stores/training-store'
 import { formatPrice, formatSigned } from '../../utils/format'
@@ -7,6 +16,7 @@ import { useTimezoneStore } from '../../stores/timezone-store'
 import { tzPartsFromSec } from '@shared/types/timezone'
 import { useT } from '../../i18n'
 import { TagFilter, useTagFilter } from '../common/TagFilter'
+import { TradeTimeEdge } from './TradeTimeEdge'
 
 interface Props {
   sessionName: string
@@ -19,6 +29,10 @@ interface Props {
   trades: ClosedTrade[]
   onClose: () => void
   onSelectTrade: (trade: ClosedTrade) => void
+  /** 编辑这笔交易的思路 / 标签（只有日志页给了，训练页的报告不给编辑） */
+  onEditTrade?: (trade: ClosedTrade) => void
+  /** 刚跳转出去看图表的那一笔：回来时高亮一下，方便接着往下看 */
+  highlightTradeId?: string | null
   /** 报告最上方插入的自定义区块（日志页用来放「训练参数」卡片） */
   topSlot?: React.ReactNode
 }
@@ -54,6 +68,8 @@ export function ReportContent({
   riskPerTrade,
   trades,
   onSelectTrade,
+  onEditTrade,
+  highlightTradeId,
   topSlot
 }: Omit<Props, 'onClose'>): React.JSX.Element {
   const { t } = useT()
@@ -270,6 +286,9 @@ export function ReportContent({
             )}
           </div>
 
+          {/* 交易时段分析：哪个小时最容易赚钱。口径跟着上面的标签筛选一起走 */}
+          <TradeTimeEdge trades={filtered} tz={timezone} risk={risk} />
+
           {/* 交易明细 */}
           <div className="mt-3">
             <div className="mb-1.5 flex flex-wrap items-center gap-2">
@@ -277,7 +296,7 @@ export function ReportContent({
                 {t('report.trades.title')}
               </span>
               <span className="text-[11px] text-[var(--text-faint)]">
-                {t('report.trades.hint')}
+                {onEditTrade ? t('report.trades.hintEditable') : t('report.trades.hint')}
               </span>
               {filtering && (
                 <span className="text-[11px] text-[var(--c-accent)]">
@@ -338,14 +357,25 @@ export function ReportContent({
                         {t('report.col.pnl')}
                       </th>
                       <th className="px-2.5 py-1.5 font-medium">{t('report.col.note')}</th>
+                      {onEditTrade && (
+                        <th className="px-1.5 py-1.5 text-center font-medium">
+                          {t('report.col.edit')}
+                        </th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
                     {filtered.map((trade, i) => (
                       <tr
                         key={trade.id}
+                        data-trade-id={trade.id}
                         onClick={() => onSelectTrade(trade)}
-                        className="cursor-pointer border-t border-[var(--border-subtle)] text-[12px] transition-colors hover:bg-[var(--c-accent-tint)]"
+                        className={clsx(
+                          'cursor-pointer border-t border-[var(--border-subtle)] text-[12px] transition-colors hover:bg-[var(--c-accent-tint)]',
+                          // 刚从图 K 线跳回来的那一笔：留一条左侧色条，眼睛能找到落点
+                          highlightTradeId === trade.id &&
+                            'bg-[var(--c-accent-tint)] shadow-[inset_2px_0_0_0_var(--c-accent)]'
+                        )}
                         title={t('report.row.jumpHint')}
                       >
                         <td className="px-2.5 py-1 font-mono text-[var(--text-faint)]">{i + 1}</td>
@@ -478,6 +508,21 @@ export function ReportContent({
                             <span className="text-[var(--text-faint)]">—</span>
                           )}
                         </td>
+                        {onEditTrade && (
+                          <td className="px-1.5 py-1 text-center">
+                            <button
+                              onClick={(e) => {
+                                // 别触发整行的「跳到图表」
+                                e.stopPropagation()
+                                onEditTrade(trade)
+                              }}
+                              title={t('report.row.editHint')}
+                              className="rounded p-1 text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--c-accent)]"
+                            >
+                              <Pencil size={11} />
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>

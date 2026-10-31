@@ -428,6 +428,17 @@ interface TrainingState {
   setTp: (positionId: string, price: number) => void
   /** 切换「操作焦点」的那笔持仓（图表可拖 SL/TP、持仓卡高亮） */
   selectPosition: (positionId: string | null) => void
+  /**
+   * 事后编辑一笔已平仓交易的「思路（备注）」和标签（日志页用）。
+   *
+   * 只改这两样：成交价、盈亏、时间都是回放当场算出来的，事后改等于改成绩。
+   * 落库成功后同步内存里的 closedTrades，这样训练页打开报告看到的也是新值。
+   */
+  patchTradeMeta: (
+    sessionId: number,
+    tradeId: string,
+    meta: { note?: string | null; tags?: string[] }
+  ) => Promise<boolean>
 
   persistState: () => void
   /** 节流版落库（回放每前进一根都会调用，避免写盘过密） */
@@ -1535,6 +1546,27 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     const oldest = get().positions[0]
     if (!oldest) return
     get().closePosition(oldest.id, reason)
+  },
+
+  patchTradeMeta: async (sessionId, tradeId, meta) => {
+    const note = typeof meta.note === 'string' ? meta.note : null
+    const tags = normalizeTags(meta.tags ?? [])
+    try {
+      const ok = await window.api.updateTradeMeta(sessionId, tradeId, { note, tags })
+      if (!ok) return false
+      // 内存里那份也一起改：否则从日志跳回训练页看报告还是旧备注
+      if (get().activeSession?.id === sessionId) {
+        set((s) => ({
+          closedTrades: s.closedTrades.map((trade) =>
+            trade.id === tradeId ? { ...trade, note, tags } : trade
+          )
+        }))
+      }
+      return true
+    } catch (e: any) {
+      set({ error: e?.message ?? String(e) })
+      return false
+    }
   },
 
   setSl: (positionId, price) => {

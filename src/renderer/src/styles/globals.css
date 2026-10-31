@@ -99,6 +99,20 @@ body {
   }
 }
 
+/**
+ * 「返回日志」按钮出现时闪两下。
+ * 用光环而不是缩放：光环不占布局，也不会把旁边的按钮挤动。
+ */
+@keyframes trBackPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 3px var(--c-accent-tint);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .progress-stripes {
     animation: none;

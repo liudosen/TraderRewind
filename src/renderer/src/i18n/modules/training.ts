@@ -42,6 +42,8 @@ export const zh = {
   'training.reset': '重置',
   'training.progressReadonly': '回放进度（不可拖动）',
   'training.closeSession': '关闭会话',
+  'training.backToJournal': '返回日志',
+  'training.backToJournalHint': '回到刚才那份报告（那一笔会高亮）',
 
   // ── 画线工具 ───────────────────────────────────────
   'training.drawingToolHint': '{label} · {hint}（{cancel}）',
@@ -251,6 +253,8 @@ export const en: Record<keyof typeof zh, string> = {
   'training.reset': 'Reset',
   'training.progressReadonly': 'Replay progress (read-only)',
   'training.closeSession': 'Close session',
+  'training.backToJournal': 'Back to journal',
+  'training.backToJournalHint': 'Return to the report you came from (that trade stays highlighted)',
 
   'training.drawingToolHint': '{label} · {hint} ({cancel})',
   'training.drawingCancelMulti': 'right-click to finish / Esc to cancel',

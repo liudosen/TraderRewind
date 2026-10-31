@@ -32,6 +32,9 @@ const api = {
   appendClosedTrade: (trade: any) => ipcRenderer.invoke(IPC.DB_APPEND_CLOSED_TRADE, trade),
   listAggregatedTrades: (params: any) => ipcRenderer.invoke(IPC.DB_LIST_AGGREGATED_TRADES, params),
   listClosedTrades: (sessionId: number) => ipcRenderer.invoke(IPC.DB_LIST_CLOSED_TRADES, sessionId),
+  /** 日志页编辑一笔交易的思路（备注）与标签；返回是否真的改到了行 */
+  updateTradeMeta: (sessionId: number, tradeId: string, meta: { note?: string | null; tags?: string[] }) =>
+    ipcRenderer.invoke(IPC.DB_UPDATE_CLOSED_TRADE_META, sessionId, tradeId, meta),
 
   // ----- 数据库: K线 -----
   getCandlesRange: (datasetId: number, fromTime: number, toTime: number) =>

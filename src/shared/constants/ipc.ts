@@ -58,6 +58,8 @@ export const IPC = {
   DB_LIST_CLOSED_TRADES: 'db:listClosedTrades',
   DB_LIST_AGGREGATED_TRADES: 'db:listAggregatedTrades',
   DB_UPDATE_CLOSED_TRADE_SCREENSHOT: 'db:updateClosedTradeScreenshot',
+  /** 日志里编辑一笔交易的「思路（备注）+ 标签」，两个一起改，避免半截状态 */
+  DB_UPDATE_CLOSED_TRADE_META: 'db:updateClosedTradeMeta',
   DB_UPDATE_CLOSED_TRADE_TAGS: 'db:updateClosedTradeTags',
   DB_UPDATE_CLOSED_TRADE_ENTRY_REASON: 'db:updateClosedTradeEntryReason',
   DB_UPDATE_CLOSED_TRADE_STRATEGY: 'db:updateClosedTradeStrategyName',

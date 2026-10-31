@@ -13,6 +13,7 @@ import { useTrainingStore, rowToTrade, type ClosedTrade } from '../../stores/tra
 import { useAppStore } from '../../stores/app-store'
 import { ReportContent } from './TrainingReport'
 import { SessionParamsCard } from './SessionParams'
+import { TradeMetaDialog } from './TradeMetaDialog'
 import { formatSigned, formatSpentTime } from '../../utils/format'
 import { useT } from '../../i18n'
 import { useTimezoneStore } from '../../stores/timezone-store'
@@ -67,6 +68,16 @@ function fmtDateTime(ts: number | null, tz: string): string {
 
 const LIST_OPEN_KEY = 'tr:journalList'
 
+/**
+ * 切到 K 线图再回来时，得站在「原来那一集、原来那一笔」上。
+ *
+ * 面板是按 activePane 条件渲染的，去训练页就等于把 JournalPane 卸载掉，
+ * useState 全丢。所以把「看到哪了」放在模块作用域里带过去 —— 只活在这次运行里，
+ * 不落盘：下次启动重新从头看是合理的。
+ */
+let lastSelectedId: number | null = null
+let lastTradeId: string | null = null
+
 export function JournalPane(): React.JSX.Element {
   const { t, locale } = useT()
   // 日志里的所有时间统一按这个时区显示（默认 UTC+8）
@@ -75,9 +86,13 @@ export function JournalPane(): React.JSX.Element {
   const executionCost = useTrainingStore((s) => s.executionCost)
   const [rows, setRows] = useState<CompletedRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [selectedId, setSelectedId] = useState<number | null>(lastSelectedId)
   const [trades, setTrades] = useState<ClosedTrade[]>([])
   const [tradeLoading, setTradeLoading] = useState(false)
+  /** 正在编辑思路 / 标签的那一笔（null = 没开编辑框） */
+  const [editing, setEditing] = useState<ClosedTrade | null>(null)
+  /** 刚从图表跳回来的那一笔，表格里留个高亮，方便接着往下看 */
+  const highlightId = lastTradeId
 
   // 左侧列表是否显示（记住状态，和训练页的会话列表一个套路）
   const [listOpen, setListOpen] = useState<boolean>(
@@ -106,6 +121,27 @@ export function JournalPane(): React.JSX.Element {
   useEffect(() => {
     void load()
   }, [load])
+
+  // 记住「看的是哪一集」，切到图表再回来能接着看
+  useEffect(() => {
+    lastSelectedId = selectedId
+  }, [selectedId])
+
+  /**
+   * 从图表回来时，把刚才那一笔滚到视野中间。
+   *
+   * 报告很长（参数卡 + 概览 + 曲线 + 时段分析 + 明细），回来时停在顶上，
+   * 高亮那行在屏幕外面等于没做。等这一帧布局完再滚，否则表格还没渲染出来。
+   */
+  useEffect(() => {
+    if (!highlightId || trades.length === 0) return
+    const timer = setTimeout(() => {
+      document
+        .querySelector(`[data-trade-id="${CSS.escape(highlightId)}"]`)
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 60)
+    return () => clearTimeout(timer)
+  }, [highlightId, trades])
 
   useEffect(() => {
     if (selectedId == null) {
@@ -144,7 +180,25 @@ export function JournalPane(): React.JSX.Element {
      */
     if (useTrainingStore.getState().activeSession?.id !== selectedId) return
     useTrainingStore.getState().focusTrade(trade)
+    // 记下这一笔：回来时表格里高亮它，接着往下看不用重新找
+    lastTradeId = trade.id
+    // 告诉训练页「你是从日志点进来的」，那边会挂一个高亮的返回按钮
+    useAppStore.getState().setJournalReturn(true)
     useAppStore.getState().setActivePane('training')
+  }
+
+  /** 保存一笔交易的思路与标签：先落库，成功了再改本地这份列表 */
+  const saveTradeMeta = async (
+    trade: ClosedTrade,
+    note: string | null,
+    tags: string[]
+  ): Promise<boolean> => {
+    if (selectedId == null) return false
+    const ok = await useTrainingStore.getState().patchTradeMeta(selectedId, trade.id, { note, tags })
+    if (ok) {
+      setTrades((prev) => prev.map((x) => (x.id === trade.id ? { ...x, note, tags } : x)))
+    }
+    return ok
   }
 
   return (
@@ -350,6 +404,8 @@ export function JournalPane(): React.JSX.Element {
                 riskPerTrade={(selected as any).risk_per_trade ?? null}
                 trades={trades}
                 onSelectTrade={(tr) => void jumpToChart(tr)}
+                onEditTrade={(tr) => setEditing(tr)}
+                highlightTradeId={highlightId}
                 topSlot={
                   <SessionParamsCard
                     symbol={selected.dataset_symbol ?? ''}
@@ -377,6 +433,16 @@ export function JournalPane(): React.JSX.Element {
           </>
         )}
       </section>
+
+      {/* 编辑某笔交易的思路 / 标签 */}
+      {editing && (
+        <TradeMetaDialog
+          trade={editing}
+          tz={selected?.tz ?? timezone}
+          onClose={() => setEditing(null)}
+          onSave={(note, tags) => saveTradeMeta(editing, note, tags)}
+        />
+      )}
     </div>
   )
 }
