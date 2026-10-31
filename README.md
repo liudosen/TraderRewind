@@ -38,7 +38,7 @@
 ## 下载与安装
 
 到 [GitHub Releases](https://github.com/liudosen/TraderRewind/releases) 或
-[码云 Releases](https://gitee.com/liudosen/TraderRewind/releases) 下载对应文件，
+[码云 Releases](https://gitee.com/DS_IT/TraderRewind/releases) 下载对应文件，
 不需要装 Node、不需要配环境。
 
 | 文件 | 适用场景 | 怎么用 |

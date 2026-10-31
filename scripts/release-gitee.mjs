@@ -59,7 +59,7 @@ function repoSlug() {
   } catch {
     /* 没有 gitee remote，走默认 */
   }
-  return 'liudosen/TraderRewind'
+  return 'DS_IT/TraderRewind'
 }
 
 /** 这一版要上传的文件：安装程序 + 免安装包 */

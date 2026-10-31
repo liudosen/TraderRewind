@@ -32,11 +32,17 @@ import { compareVersions } from '@shared/utils/version'
 import { getTrainingDb } from '../db/connection'
 import { describeProxyProblem, fetchBuffer, FetchError } from '../utils/http'
 
-/** 仓库坐标：GitHub 与码云同名同 owner，改一处两边都跟着变 */
-const REPO_OWNER = 'liudosen'
+/**
+ * 仓库坐标。
+ * 两个平台的账号路径**不一样**，不能共用一个 owner：
+ * GitHub 是 `liudosen`，码云的个性地址是 `DS_IT`（登录名 DS_IT、昵称 liudosen）。
+ * 曾经按同一个 owner 写过，结果码云那条线永远 404、静默退回 GitHub —— 排查了半天。
+ */
 const REPO_NAME = 'TraderRewind'
-const GITHUB_REPO = `https://github.com/${REPO_OWNER}/${REPO_NAME}`
-const GITEE_REPO = `https://gitee.com/${REPO_OWNER}/${REPO_NAME}`
+const GITHUB_OWNER = 'liudosen'
+const GITEE_OWNER = 'DS_IT'
+const GITHUB_REPO = `https://github.com/${GITHUB_OWNER}/${REPO_NAME}`
+const GITEE_REPO = `https://gitee.com/${GITEE_OWNER}/${REPO_NAME}`
 
 /** 代理和下载面板共用同一个键，用户配一次两边都认 */
 const PROXY_META_KEY = 'download.proxy.v2'
@@ -60,14 +66,14 @@ const CHANNELS: UpdateChannel[] = [
   {
     id: 'github',
     label: 'GitHub',
-    releaseApi: `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
+    releaseApi: `https://api.github.com/repos/${GITHUB_OWNER}/${REPO_NAME}/releases/latest`,
     releasePage: `${GITHUB_REPO}/releases/latest`,
     downloadBase: `${GITHUB_REPO}/releases/download`
   },
   {
     id: 'gitee',
     label: '码云',
-    releaseApi: `https://gitee.com/api/v5/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
+    releaseApi: `https://gitee.com/api/v5/repos/${GITEE_OWNER}/${REPO_NAME}/releases/latest`,
     releasePage: `${GITEE_REPO}/releases`,
     downloadBase: `${GITEE_REPO}/releases/download`
   }

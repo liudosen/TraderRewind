@@ -38,7 +38,7 @@ Runs entirely offline. No account, no connection to any broker. All data stays o
 ## Download and install
 
 Grab the file you need from [GitHub Releases](https://github.com/liudosen/TraderRewind/releases)
-or [Gitee Releases](https://gitee.com/liudosen/TraderRewind/releases).
+or [Gitee Releases](https://gitee.com/DS_IT/TraderRewind/releases).
 No Node, no toolchain, nothing to configure.
 
 | File | Who it's for | How to use |
