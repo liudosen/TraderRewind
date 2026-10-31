@@ -256,6 +256,8 @@ async function fetchOnce(urlStr: string, opts: FetchOptions): Promise<Buffer> {
 
   return await new Promise<Buffer>((resolve, reject) => {
     let settled = false
+    /** 空闲超时定时器：每收到一块数据就重新计时，见下面 armTimer 的注释 */
+    let timer: NodeJS.Timeout | undefined
     const done = (err: Error | null, data?: Buffer) => {
       if (settled) return
       settled = true
@@ -305,6 +307,8 @@ async function fetchOnce(urlStr: string, opts: FetchOptions): Promise<Buffer> {
           req.destroy()
           return
         }
+        // 有数据进来就说明连接还活着，把空闲超时往后推
+        armTimer()
         chunks.push(chunk)
         received += chunk.length
         opts.onProgress?.(chunk.length, received, total)
@@ -313,10 +317,20 @@ async function fetchOnce(urlStr: string, opts: FetchOptions): Promise<Buffer> {
       res.on('error', (e) => done(e))
     })
 
-    const timer = setTimeout(() => {
-      req.destroy()
-      done(new FetchError('timeout'))
-    }, timeoutMs)
+    /**
+     * `timeoutMs` 是**空闲**超时，不是整体墙钟上限：每收到一块数据就重新计时。
+     * 早先是整体超时，于是更新下载（84 MB，300 秒）隐含要求平均 ≥287 KB/s
+     * —— 慢速但仍在传输的下载会被中途误杀成 timeout，等于把最需要更新的
+     * 那批用户挡在门外。改成空闲超时后，「卡住」才会中断。
+     */
+    const armTimer = (): void => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        req.destroy()
+        done(new FetchError('timeout'))
+      }, timeoutMs)
+    }
+    armTimer()
 
     const onAbort = () => {
       req.destroy()
