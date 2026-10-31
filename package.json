@@ -37,7 +37,8 @@
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "package": "electron-vite build && electron-builder",
     "package:win": "electron-vite build && electron-builder --win",
-    "package:mac": "electron-vite build && electron-builder --mac"
+    "package:mac": "electron-vite build && electron-builder --mac",
+    "release:gh": "node scripts/release-gh.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
