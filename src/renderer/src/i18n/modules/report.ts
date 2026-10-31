@@ -138,6 +138,7 @@ export const zh = {
 
   'report.reason.sl': '止损',
   'report.reason.tp': '止盈',
+  'report.reason.trail': '移动止盈',
   'report.reason.partial': '减仓',
   'report.reason.manual': '手动'
 }
@@ -278,6 +279,7 @@ export const en: Record<keyof typeof zh, string> = {
 
   'report.reason.sl': 'Stop-loss',
   'report.reason.tp': 'Take-profit',
+  'report.reason.trail': 'Trailing stop',
   'report.reason.partial': 'Partial',
   'report.reason.manual': 'Manual'
 }

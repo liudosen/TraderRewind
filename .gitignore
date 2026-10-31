@@ -17,3 +17,6 @@ Thumbs.db
 *.db-journal
 *.db-wal
 *.db-shm
+
+# 开发期 CDP 巡检截图
+shots/

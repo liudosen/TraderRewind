@@ -449,9 +449,11 @@ export function ReportContent({
                             ? t('report.reason.sl')
                             : trade.reason === 'tp'
                               ? t('report.reason.tp')
-                              : trade.reason === 'partial'
-                                ? t('report.reason.partial')
-                                : t('report.reason.manual')}
+                              : trade.reason === 'trail'
+                                ? t('report.reason.trail')
+                                : trade.reason === 'partial'
+                                  ? t('report.reason.partial')
+                                  : t('report.reason.manual')}
                         </td>
                         <td className="px-2.5 py-1">
                           {trade.tags.length > 0 ? (

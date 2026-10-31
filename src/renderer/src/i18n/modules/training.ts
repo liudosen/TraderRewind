@@ -142,6 +142,7 @@ export const zh = {
     '这笔成交还在当前回放进度之后，先不定位 —— 免得把还没走到的 K 线露出来',
   'training.focusForeign': '这笔成交不在当前回测集里，未在图上定位',
   'training.reasonPartial': '减仓',
+  'training.reasonTrail': '移动止盈',
   'training.reasonManual': '手动',
 
   // ── 空态 ───────────────────────────────────────────
@@ -348,6 +349,7 @@ export const en: Record<keyof typeof zh, string> = {
     'This trade is still ahead of the replay position, so the chart stays put — no peeking at future bars',
   'training.focusForeign': 'This trade is not part of the current session, so it was not located',
   'training.reasonPartial': 'Partial',
+  'training.reasonTrail': 'Trailing',
   'training.reasonManual': 'Manual',
 
   'training.emptyTitle': 'Start a replay session',

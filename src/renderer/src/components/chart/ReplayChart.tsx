@@ -173,6 +173,8 @@ const ENTRY_BUY_COLOR = '#f87171'
 const ENTRY_SELL_COLOR = '#4ade80'
 const SL_COLOR = '#ef4444'
 const TP_COLOR = '#22c55e'
+/** 止损被拖到盈利侧（移动止盈）：换琥珀色，和「亏损止损」一眼分辨 */
+const TRAIL_COLOR = '#f59e0b'
 // 细线更好看，但抓取判定要放宽一点，否则很难「抓住」
 const HIT_TOLERANCE = 10
 
@@ -191,15 +193,31 @@ type RiskHint =
  *
  * 金额一律由上层给（手数、合约量、佣金、报价货币汇率都在那边），
  * 图表这边只负责拼字符串 —— 没设线或算不出来时就退回裸的 SL / TP。
+ *
+ * 止损被拖到成本价的盈利侧之后，它其实是「移动止盈」：
+ * 标签后面缀一句，免得看到一根红线写着正号金额还以为是止损打错了方向。
  */
 function riskTitle(
   p: Position,
   kind: 'sl' | 'tp',
-  label?: (position: Position, kind: 'sl' | 'tp') => string
+  label?: (position: Position, kind: 'sl' | 'tp') => string,
+  trailingLabel?: string
 ): string {
   const base = kind === 'sl' ? 'SL' : 'TP'
   const money = label ? label(p, kind) : ''
-  return money ? `${base} ${money}` : base
+  const trailing = kind === 'sl' && isTrailingStop(p)
+  const title = money ? `${base} ${money}` : base
+  return trailing && trailingLabel ? `${title} · ${trailingLabel}` : title
+}
+
+/**
+ * 止损是不是已经被拖到了成本价的盈利侧。
+ *
+ * 到了盈利侧它就不再是「认亏出局」而是「锁住已有的浮盈」，
+ * 所以标签要额外说明、线的颜色也要换掉，否则红线上挂着正数金额看着像算错了。
+ */
+function isTrailingStop(p: Position): boolean {
+  return p.sl != null && (p.side === 'buy' ? p.sl > p.entryPrice : p.sl < p.entryPrice)
 }
 
 type AnySeries = ISeriesApi<'Line'> | ISeriesApi<'Histogram'>
@@ -691,8 +709,8 @@ export function ReplayChart({
   /**
    * 本次「拖开仓线设止损止盈」允许设哪一个：
    *  · 'free' —— 两个都还没设，拖到哪边就设哪个（实时跟着方向切换）
-   *  · 'sl'   —— 已有止盈，这次只能往亏损侧拖止损
-   *  · 'tp'   —— 已有止损，这次只能往盈利侧拖止盈
+   *  · 'sl'   —— 已有止盈，这次只能拖止损
+   *  · 'tp'   —— 已有止损，这次只能拖止盈
    *
    * 在 mousedown 那一刻按当时的持仓快照定下来，拖完清空。
    * 不在移动过程中反复重算：否则同一拖里先往上（设了止盈）再往下，
@@ -1645,13 +1663,13 @@ export function ReplayChart({
       if (p.sl != null) {
         lines.sl = series.createPriceLine({
           price: p.sl,
-          color: SL_COLOR,
+          color: isTrailingStop(p) ? TRAIL_COLOR : SL_COLOR,
           // 细虚线：不遮挡 K 线，也一眼能看出是可拖的辅助线
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
           // 标签直接写成「SL -$12.40」：这根线打到了到底亏多少，不用自己算
-          title: riskTitle(p, 'sl', riskPnlLabel)
+          title: riskTitle(p, 'sl', riskPnlLabel, t('chart.trailingStop'))
         })
       }
 
@@ -1662,7 +1680,7 @@ export function ReplayChart({
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
-          title: riskTitle(p, 'tp', riskPnlLabel)
+          title: riskTitle(p, 'tp', riskPnlLabel, t('chart.trailingStop'))
         })
       }
 
@@ -1684,10 +1702,15 @@ export function ReplayChart({
       const lines = posLinesRef.current.get(p.id)
       if (!lines) continue
       if (lines.sl && p.sl != null) {
-        lines.sl.applyOptions({ price: p.sl, title: riskTitle(p, 'sl', riskPnlLabel) })
+        lines.sl.applyOptions({
+          price: p.sl,
+          // 拖过成本价的那一刻颜色要跟着换（拖拽中是每帧刷，所以放这里而不是建线那次）
+          color: isTrailingStop(p) ? TRAIL_COLOR : SL_COLOR,
+          title: riskTitle(p, 'sl', riskPnlLabel, t('chart.trailingStop'))
+        })
       }
       if (lines.tp && p.tp != null) {
-        lines.tp.applyOptions({ price: p.tp, title: riskTitle(p, 'tp', riskPnlLabel) })
+        lines.tp.applyOptions({ price: p.tp, title: riskTitle(p, 'tp', riskPnlLabel, t('chart.trailingStop')) })
       }
     }
   }, [positions, riskPnlLabel])
@@ -2220,24 +2243,27 @@ export function ReplayChart({
         /**
          * 拖开仓那条线设止损/止盈。
          *
-         * 拖到哪一侧决定设的是哪一个，而且是**实时**的 —— 往上拖看到止盈在走，
-         * 再往回拖过开仓价，同一个拖动手势就切换成在设止损（不再锁死第一次的方向）：
-         *   做多：开仓价上方 = 止盈，下方 = 止损
-         *   做空：开仓价上方 = 止损，下方 = 止盈
+         * 按下时已经有一边设好了（比如已有止盈），这一次就只能补另一边 ——
+         * 方向不参与判断，只认「缺的那边」。这样价格走顺之后想补一条跟上来的止损，
+         * 从开仓线往上一拖就能设（止损落在成本价上方也没关系，被打掉按移动止盈记账），
+         * 不用先往下拖一条再往上拖。
          *
-         * 但如果按下时已经有一边设好了（比如已有止盈），这一次就只能补另一边：
-         * 往另一边拖直接忽略，免得把已经设好的那条顶掉。
+         * 两边都空时按「相对开仓价的方向」定：往上甩是止盈、往下甩是止损（空头相反）。
+         * 这里刻意不用现价当分界：开完仓行情往往已经跑出去很远，开仓线本身就在现价下方，
+         * 手指往上一拖会先穿过现价，于是先被当成止损留下一条线、再变成止盈 ——
+         * 凭空多出一条用户没要的止损。
+         *
+         * 「能拖到哪」由 store 里的夹取负责（止损只能在现价的亏损侧、止盈不能差过成本价）。
          */
         if (dragRef.current === 'risk') {
           const point = Math.pow(10, -pos.digits)
           if (Math.abs(price - pos.entryPrice) < point) return // 还贴在开仓价上，不算数
 
           const up = price > pos.entryPrice
-          const kind = pos.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
+          const byDir = pos.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
 
           const mode = riskModeRef.current
-          if (mode === 'sl' && kind !== 'sl') return
-          if (mode === 'tp' && kind !== 'tp') return
+          const kind = mode === 'sl' ? 'sl' : mode === 'tp' ? 'tp' : byDir
 
           if (kind === 'sl') onSlChange(pos.id, price)
           else onTpChange(pos.id, price)

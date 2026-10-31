@@ -2430,9 +2430,11 @@ export function TrainingPane(): React.JSX.Element {
                           ? t('training.stopLoss')
                           : trade.reason === 'tp'
                             ? t('training.takeProfit')
-                            : trade.reason === 'partial'
-                              ? t('training.reasonPartial')
-                              : t('training.reasonManual')}
+                            : trade.reason === 'trail'
+                              ? t('training.reasonTrail')
+                              : trade.reason === 'partial'
+                                ? t('training.reasonPartial')
+                                : t('training.reasonManual')}
                       </td>
                       <td className="px-3 py-1.5">
                         {trade.tags.length > 0 ? (

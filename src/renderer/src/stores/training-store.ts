@@ -94,7 +94,7 @@ export type Side = 'buy' | 'sell'
  * 一笔成交是怎么结束的。
  * `partial` 是「减仓」：手上那笔没平干净，只结算掉了一部分手数。
  */
-export type CloseReason = 'sl' | 'tp' | 'manual' | 'partial'
+export type CloseReason = 'sl' | 'tp' | 'trail' | 'manual' | 'partial'
 
 export interface Position {
   id: string
@@ -215,6 +215,22 @@ function partialAt(
   if (!bar || !(cursorTime > 0)) return null
   if (cursorTime >= bucketEndTime(bar.time, tf, rawBars)) return null
   return partialBucketBar(rawBars, tf, cursorTime)
+}
+
+/**
+ * 「现在这个价」= 最后一根已揭示的 K 线的收盘价（大周期上要的是截断版那条）。
+ *
+ * 拖止损 / 止盈时所有夹取都以它为准：止损得留在现价的亏损侧、
+ * 止盈得留在现价的盈利侧，否则拖出来的就是一张立刻会成交的废单。
+ */
+function currentClose(get: () => {
+  bars: Bar[]
+  cursor: number
+  partialBar: Bar | null
+}): number | null {
+  const s = get()
+  const bar = s.partialBar ?? s.bars[s.cursor]
+  return bar && Number.isFinite(bar.close) ? bar.close : null
 }
 
 interface TrainingState {
@@ -1207,17 +1223,25 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
      * 逐笔判止损 / 止盈：同一根 K 线里可能有多笔同时被扫掉（对冲时更是常见——
      * 一根大阳线会让多头止盈、空头止损一起触发），各笔独立结算。
      * 单根 K 线无法还原盘中路径，采用保守规则：每笔都先判止损。
+     *
+     * 止损落在成本价的盈利侧（多头 SL 已在开仓价上方 / 空头在下方）时，
+     * 这一笔其实是**移动止盈**被触发 —— 止损跟上去把利润锁住了，
+     * 记账按 trail 记，报告里别和「亏着出场」混在一起看。
      */
     for (const pos of [...get().positions]) {
+      const stopIsProfit =
+        pos.sl != null &&
+        (pos.side === 'buy' ? pos.sl > pos.entryPrice : pos.sl < pos.entryPrice)
+      const slReason: CloseReason = stopIsProfit ? 'trail' : 'sl'
       if (pos.side === 'buy') {
         if (pos.sl != null && bar.low <= pos.sl) {
-          get().closePosition(pos.id, 'sl', pos.sl, bar.time)
+          get().closePosition(pos.id, slReason, pos.sl, bar.time)
         } else if (pos.tp != null && bar.high >= pos.tp) {
           get().closePosition(pos.id, 'tp', pos.tp, bar.time)
         }
       } else {
         if (pos.sl != null && bar.high >= pos.sl) {
-          get().closePosition(pos.id, 'sl', pos.sl, bar.time)
+          get().closePosition(pos.id, slReason, pos.sl, bar.time)
         } else if (pos.tp != null && bar.low <= pos.tp) {
           get().closePosition(pos.id, 'tp', pos.tp, bar.time)
         }
@@ -1569,15 +1593,23 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     }
   },
 
+  /**
+   * 拖止损。
+   *
+   * 唯一的硬约束是「留在当前价的亏损侧」：做多在现价下方、做空在现价上方。
+   * 越过现价就成了一张立刻会成交的废单（下一根 K 线必被扫掉），没有意义。
+   *
+   * 除此之外不再限制跟开仓价的关系 ——
+   * 价格走顺以后把止损一路跟上去（越过开仓价也没关系），就是移动止盈；
+   * 这种止损被打掉时按「移动止盈」记账（见 advance 里的判因）。
+   */
   setSl: (positionId, price) => {
     const pos = get().positions.find((p) => p.id === positionId)
     if (!pos || !Number.isFinite(price)) return
+    const cur = currentClose(get)
+    if (cur == null) return
     const min = pointOf(pos.digits)
-    // 止损必须在亏损侧：做多放在开仓价下方，做空放在上方
-    const sl =
-      pos.side === 'buy'
-        ? Math.min(price, pos.entryPrice - min)
-        : Math.max(price, pos.entryPrice + min)
+    const sl = pos.side === 'buy' ? Math.min(price, cur - min) : Math.max(price, cur + min)
     set({
       positions: get().positions.map((p) =>
         p.id === positionId ? { ...p, sl: Math.round(sl / min) * min } : p
@@ -1585,14 +1617,27 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     })
   },
 
+  /**
+   * 拖止盈。
+   *
+   * 两条约束：
+   *  1. 必须在当前价的盈利侧（做多在上方）—— 否则等于市价平仓，不是止盈；
+   *  2. 不能比成本价更差（做多不低于开仓价）—— 价格反向运行脱离成本后，
+   *     可以把止盈一路降下来放到**成本价**，做平价保护（回到成本就走，不亏不赚）。
+   *
+   * 注意下限用的是「成本价」而不是「成本价 + 一个点」：
+   * 正好放在成本价上才是平价保护，差一个点就永远是笔小亏。
+   */
   setTp: (positionId, price) => {
     const pos = get().positions.find((p) => p.id === positionId)
     if (!pos || !Number.isFinite(price)) return
+    const cur = currentClose(get)
+    if (cur == null) return
     const min = pointOf(pos.digits)
     const tp =
       pos.side === 'buy'
-        ? Math.max(price, pos.entryPrice + min)
-        : Math.min(price, pos.entryPrice - min)
+        ? Math.max(price, pos.entryPrice, cur + min)
+        : Math.min(price, pos.entryPrice, cur - min)
     set({
       positions: get().positions.map((p) =>
         p.id === positionId ? { ...p, tp: Math.round(tp / min) * min } : p

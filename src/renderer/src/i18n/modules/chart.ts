@@ -58,9 +58,11 @@ export const zh = {
   'chart.hintSetSl': '{side}设止损',
   'chart.hintSetTp': '{side}设止盈',
   'chart.hintDrag': '拖动',
-  'chart.hintAdjustNote': '线可上下调整',
+  'chart.hintAdjustNote': '线可上下调整 · 止损拖过成本价 = 移动止盈',
   'chart.hintMulti': '· 共 {n} 笔，拖哪条线就选中哪笔',
-  'chart.hintReduce': '· 右键开仓线可减仓'
+  'chart.hintReduce': '· 右键开仓线可减仓',
+  /** 止损被拖到成本价的盈利侧时，线标签后面缀的字 */
+  'chart.trailingStop': '移动止盈'
 }
 
 export const en: Record<keyof typeof zh, string> = {
@@ -119,7 +121,8 @@ export const en: Record<keyof typeof zh, string> = {
   'chart.hintSetSl': '{side} to set stop-loss',
   'chart.hintSetTp': '{side} to set take-profit',
   'chart.hintDrag': 'Drag',
-  'chart.hintAdjustNote': ' lines up or down',
+  'chart.hintAdjustNote': ' lines up or down · stop past entry = trailing stop',
   'chart.hintMulti': '· {n} positions — drag a line to select it',
-  'chart.hintReduce': '· Right-click the entry line to reduce'
+  'chart.hintReduce': '· Right-click the entry line to reduce',
+  'chart.trailingStop': 'trailing'
 }
