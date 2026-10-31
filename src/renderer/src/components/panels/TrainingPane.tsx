@@ -1070,7 +1070,10 @@ export function TrainingPane(): React.JSX.Element {
              * （比如停在 71%，实际已经跑过好几千根）。
              */
             // 正在打的这一集用「精确到分钟」的游标时间，切大周期也不会往后退一整格
-            const row = isActive && currentBar ? { ...s, current_bar_time: currentTime } : s
+            // 余额同理：列表那份是快照，不跟着实时值走的话这一行会一直显示开仓前的钱
+            const row = isActive && currentBar
+              ? { ...s, current_bar_time: currentTime, balance }
+              : s
             const done = isActive ? completedAt != null : s.completed_at != null
             const pct = done ? 100 : sessionProgress(row)
             return (

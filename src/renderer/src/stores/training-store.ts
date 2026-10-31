@@ -1108,6 +1108,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   },
 
   closeActiveSession: () => {
+    const { activeSession, cursorTime, completedAt, balance, sessions } = get()
     // 先把手上的进度写进去，再清空内存态，否则下次打开会回到旧位置
     get().flushPersist()
     // 退出会话后时间显示回到设置页的全局时区
@@ -1132,7 +1133,27 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       completedAt: null,
       openedAtEnd: false,
       playing: false,
-      symbol: ''
+      symbol: '',
+      /**
+       * 列表里那一行改成「刚才眼前的实时状态」。
+       *
+       * `sessions` 是打开页面时的快照，回放过程中一次都不回写；退出会话时
+       * `completedAt` 又会被清成 null，于是这一行只能拿快照渲染 ——
+       * 表现就是「回测已经跑完，进度条却没满，再点一次才恢复成满的」。
+       * 余额是同一类问题（跑完回来还显示开打前的钱），一起补上。
+       */
+      sessions: activeSession
+        ? sessions.map((s) =>
+            s.id === activeSession.id
+              ? {
+                  ...s,
+                  current_bar_time: cursorTime || s.current_bar_time,
+                  completed_at: completedAt ?? s.completed_at,
+                  balance
+                }
+              : s
+          )
+        : sessions
     })
   },
 
@@ -1288,9 +1309,25 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
 
   /** 回测集完成：游标走到区间最后一根时落库（幂等） */
   markCompleted: () => {
-    const { activeSession, completedAt } = get()
+    const { activeSession, completedAt, cursorTime, sessions } = get()
     if (!activeSession || completedAt) return
-    set({ completedAt: Date.now() })
+    const at = Date.now()
+    set({
+      completedAt: at,
+      /**
+       * 列表里那一行也当场改掉。
+       *
+       * `sessions` 只是打开页面时查出来的一份拷贝，回放过程中从不回写；
+       * 不补这一下，跑完之后一旦退出会话（closeActiveSession 会把 completedAt 清掉），
+       * 这一行就退回快照里的旧进度 —— 明明打完了却显示没走完，
+       * 再点一次才会因为重新读库而变成满的。
+       */
+      sessions: sessions.map((s) =>
+        s.id === activeSession.id
+          ? { ...s, completed_at: at, current_bar_time: cursorTime || s.current_bar_time }
+          : s
+      )
+    })
     void window.api.completeSession(activeSession.id)
   },
 
