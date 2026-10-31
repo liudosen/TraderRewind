@@ -11,7 +11,9 @@ import {
   Server,
   RefreshCw,
   ChevronRight,
-  Info
+  Info,
+  ExternalLink,
+  Upload
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useDownloadStore, type DatasetRow } from '../../stores/download-store'
@@ -24,7 +26,8 @@ import type {
   DownloadPhase,
   DownloadTaskProgress,
   InstrumentCategory,
-  InstrumentInfo
+  InstrumentInfo,
+  McpStatus
 } from '@shared/types/download'
 import { useT, instrumentLabel, translateLabel, type MessageKey } from '../../i18n'
 import {
@@ -76,6 +79,10 @@ export function DataSourcePanel(): React.JSX.Element {
   const catalog = useDownloadStore((s) => s.catalog)
   const catalogLoaded = useDownloadStore((s) => s.catalogLoaded)
   const loadCatalog = useDownloadStore((s) => s.loadCatalog)
+  const refreshCatalog = useDownloadStore((s) => s.refreshCatalog)
+  const refreshingCatalog = useDownloadStore((s) => s.refreshingCatalog)
+  const checkMcpStatus = useDownloadStore((s) => s.checkMcpStatus)
+  const mcpStatus = useDownloadStore((s) => s.mcpStatus)
   const sourceId = useDownloadStore((s) => s.sourceId)
   const setSource = useDownloadStore((s) => s.setSource)
   const selected = useDownloadStore((s) => s.selected)
@@ -98,8 +105,13 @@ export function DataSourcePanel(): React.JSX.Element {
   const loadingDatasets = useDownloadStore((s) => s.loadingDatasets)
   const loadDatasets = useDownloadStore((s) => s.loadDatasets)
   const removeDataset = useDownloadStore((s) => s.removeDataset)
+  const exportDatasetsDb = useDownloadStore((s) => s.exportDatasetsDb)
+  const importDatasetsDb = useDownloadStore((s) => s.importDatasetsDb)
 
   const [search, setSearch] = useState('')
+  /** 导入 / 导出进行中：按钮置灰，避免连点出两个保存对话框 */
+  const [dbBusy, setDbBusy] = useState<'export' | 'import' | null>(null)
+  const [dbMsg, setDbMsg] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null)
 
   useEffect(() => {
     void loadCatalog()
@@ -107,6 +119,19 @@ export function DataSourcePanel(): React.JSX.Element {
     const off = bindProgress()
     return off
   }, [loadCatalog, loadDatasets, bindProgress])
+
+  /**
+   * 轮询 cTrader 的 MCP 状态。
+   *
+   * 用户开 / 关 cTrader 是个随时可能发生的动作，界面必须自己发现，
+   * 不能指望用户回来点一下。探活本身只是一次本地 TCP 连接（毫秒级、
+   * 无副作用），3 秒一次完全无感；连上之后 store 会顺手把品种表补齐。
+   */
+  useEffect(() => {
+    void checkMcpStatus()
+    const timer = setInterval(() => void checkMcpStatus(), 3000)
+    return () => clearInterval(timer)
+  }, [checkMcpStatus])
 
   const source = catalog.find((s) => s.id === sourceId) ?? catalog[0]
   const instruments = source?.instruments ?? []
@@ -250,6 +275,53 @@ export function DataSourcePanel(): React.JSX.Element {
     [snapshot]
   )
 
+  /**
+   * 导出：ids=null 表示全部。
+   * 用户按「取消」不算失败，不弹红字 —— 他刚刚只是改了主意。
+   */
+  const runExport = async (ids: number[] | null): Promise<void> => {
+    if (dbBusy) return
+    setDbBusy('export')
+    setDbMsg(null)
+    const r = await exportDatasetsDb(ids)
+    setDbBusy(null)
+    if (r.canceled) return
+    if (!r.ok) {
+      setDbMsg({ tone: 'bad', text: t('ds.dbFailed', { msg: r.error ?? '' }) })
+      return
+    }
+    setDbMsg({
+      tone: 'ok',
+      text: t('ds.exportDone', {
+        n: r.datasets ?? 0,
+        bars: formatNumber(r.bars ?? 0),
+        size: formatBytes(r.bytes ?? 0)
+      })
+    })
+  }
+
+  const runImport = async (): Promise<void> => {
+    if (dbBusy) return
+    setDbBusy('import')
+    setDbMsg(null)
+    const r = await importDatasetsDb()
+    setDbBusy(null)
+    if (r.canceled) return
+    if (!r.ok && (r.added ?? 0) === 0 && (r.merged ?? 0) === 0) {
+      setDbMsg({ tone: 'bad', text: t('ds.dbFailed', { msg: r.error ?? '' }) })
+      return
+    }
+    setDbMsg({
+      tone: r.ok ? 'ok' : 'bad',
+      text:
+        t('ds.importDone', {
+          added: r.added ?? 0,
+          merged: r.merged ?? 0,
+          bars: formatNumber(r.bars ?? 0)
+        }) + (r.error ? ` · ${r.error}` : '')
+    })
+  }
+
   return (
     <div className="h-full flex min-h-0">
       {/* ── 左：品种选择 ───────────────────────────── */}
@@ -265,7 +337,12 @@ export function DataSourcePanel(): React.JSX.Element {
             return (
               <button
                 key={s.id}
-                onClick={() => setSource(s.id)}
+                onClick={() => {
+                  setSource(s.id)
+                  // 切到 cTrader 却没拿到实时品种表时顺手补一次：用户切过来
+                  // 往往就是因为「想看看有没有把 cTrader 打开」
+                  if (s.id === 'ctrader' && !s.live) void refreshCatalog({ force: true })
+                }}
                 title={translateLabel(locale, s.description)}
                 className={clsx(
                   'rounded px-2 py-[3px] text-[11px] transition-colors',
@@ -289,7 +366,22 @@ export function DataSourcePanel(): React.JSX.Element {
             <span className="ml-auto rounded-full bg-[var(--c-pos-tint)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[var(--c-pos)]">
               {t('ds.free')}
             </span>
+            {/* 刷新品种：启动时 cTrader 没开、之后才打开的场景全靠这个按钮兜住 */}
+            <button
+              type="button"
+              onClick={() => void refreshCatalog({ force: true })}
+              disabled={refreshingCatalog}
+              title={refreshingCatalog ? t('ds.refreshingSymbols') : t('ds.refreshSymbols')}
+              className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] disabled:opacity-50"
+            >
+              <RefreshCw size={10} className={refreshingCatalog ? 'animate-spin' : ''} />
+              {t('ds.refreshSymbols')}
+            </button>
           </div>
+
+          {/* MCP 状态灯：只有 cTrader 有本地服务可探，其它源不显示 */}
+          {source?.id === 'ctrader' && <McpLamp status={mcpStatus} />}
+
           <p className="text-[10.5px] leading-relaxed text-[var(--text-muted)]">
             {source?.description ? translateLabel(locale, source.description) : t('ds.loading')}
           </p>
@@ -298,6 +390,28 @@ export function DataSourcePanel(): React.JSX.Element {
               <Info size={10} className="mt-[3px] shrink-0" />
               <span>{translateLabel(locale, source.note)}</span>
             </p>
+          )}
+
+          {/* 拿不到实时品种表时，明说现在看到的是内置清单，别让人以为品种就这么多 */}
+          {source?.id === 'ctrader' && !source.live && (
+            <p className="mt-1.5 flex items-start gap-1 text-[10px] leading-relaxed text-[var(--text-faint)]">
+              <Info size={10} className="mt-[3px] shrink-0" />
+              <span>{t('ds.catalogFallback', { n: instruments.length })}</span>
+            </p>
+          )}
+
+          {/* 新用户入口：没有 cTrader 账户就下不了数据，这两步是必经的 */}
+          {source?.id === 'ctrader' && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-[var(--border-subtle)] pt-2 text-[10px]">
+              <span className="text-[var(--text-faint)]">{t('ds.newToCtrader')}</span>
+              <ExternalTextLink href="https://secure.ic.com/en/Account/Register">
+                {t('ds.registerIc')}
+              </ExternalTextLink>
+              <span className="text-[var(--border-strong)]">·</span>
+              <ExternalTextLink href="https://www.ic.com/en/forex-trading-platform-ctrader/ctrader-windows">
+                {t('ds.downloadCtrader')}
+              </ExternalTextLink>
+            </div>
           )}
         </div>
 
@@ -551,25 +665,139 @@ export function DataSourcePanel(): React.JSX.Element {
             <span className="rounded-full bg-[var(--surface-3)] px-2 py-0.5 font-mono text-[10px] text-[var(--text-secondary)]">
               {datasets.length}
             </span>
-            <button
-              onClick={() => void loadDatasets()}
-              className="ml-auto inline-flex items-center gap-1 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-            >
-              <RefreshCw size={11} className={loadingDatasets ? 'animate-spin' : ''} />
-              {t('common.refresh')}
-            </button>
+
+            <div className="ml-auto flex items-center gap-1.5">
+              <button
+                onClick={() => void runImport()}
+                disabled={dbBusy !== null}
+                title={t('ds.dbHint')}
+                className="inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] px-2 py-1 text-[10.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-50"
+              >
+                {dbBusy === 'import' ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <Upload size={11} />
+                )}
+                {t('ds.importDb')}
+              </button>
+              <button
+                onClick={() => void runExport(null)}
+                disabled={dbBusy !== null || datasets.length === 0}
+                title={t('ds.dbHint')}
+                className="inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] px-2 py-1 text-[10.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] disabled:opacity-40"
+              >
+                {dbBusy === 'export' ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <Download size={11} />
+                )}
+                {t('ds.exportAll')}
+              </button>
+              <button
+                onClick={() => void loadDatasets()}
+                className="inline-flex items-center gap-1 px-1 text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              >
+                <RefreshCw size={11} className={loadingDatasets ? 'animate-spin' : ''} />
+                {t('common.refresh')}
+              </button>
+            </div>
           </div>
+
+          {dbMsg && (
+            <div
+              className={clsx(
+                'mb-2 flex items-start gap-1.5 rounded-md border px-2.5 py-1.5 text-[10.5px]',
+                dbMsg.tone === 'ok'
+                  ? 'border-[var(--c-pos)]/40 bg-[var(--c-pos-tint)] text-[var(--c-pos)]'
+                  : 'border-[var(--c-neg)]/40 bg-[var(--c-neg-tint)] text-[var(--c-neg)]'
+              )}
+            >
+              {dbMsg.tone === 'ok' ? (
+                <CheckCircle2 size={11} className="mt-[1px] shrink-0" />
+              ) : (
+                <AlertCircle size={11} className="mt-[1px] shrink-0" />
+              )}
+              <span className="break-all">{dbMsg.text}</span>
+            </div>
+          )}
 
           {datasets.length === 0 ? (
             <div className="rounded-lg border border-dashed border-[var(--border-subtle)] py-10 text-center">
               <p className="text-[11.5px] text-[var(--text-faint)]">{t('ds.emptyDatasets')}</p>
             </div>
           ) : (
-            <DatasetTable datasets={datasets} onDelete={(id) => void removeDataset(id)} />
+            <DatasetTable
+              datasets={datasets}
+              onDelete={(id) => void removeDataset(id)}
+              onExport={(id) => void runExport([id])}
+              exportDisabled={dbBusy !== null}
+            />
           )}
         </section>
       </div>
     </div>
+  )
+}
+
+/**
+ * cTrader 本地 MCP 状态灯。
+ *
+ * 绿 = 端口在监听（cTrader 开着且已启用 MCP），红 = 探过了但连不上，
+ * 灰 = 还没探出结果。三态都画出来，避免「刚打开页面还是灰的」被当成故障。
+ */
+function McpLamp({ status }: { status: McpStatus | null }): React.JSX.Element {
+  const { t } = useT()
+  const known = status != null
+  const up = known && status.up
+  const port = status?.port ?? 0
+  const tone = up ? 'text-[var(--c-pos)]' : known ? 'text-[var(--c-neg)]' : 'text-[var(--text-faint)]'
+
+  return (
+    <div className="mb-1.5 flex items-center gap-1.5 text-[10px]">
+      <span className="relative flex h-1.5 w-1.5 shrink-0">
+        {up && (
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--c-pos)] opacity-60" />
+        )}
+        <span
+          className={clsx(
+            'relative inline-flex h-1.5 w-1.5 rounded-full',
+            up ? 'bg-[var(--c-pos)]' : known ? 'bg-[var(--c-neg)]' : 'bg-neutral-500'
+          )}
+        />
+      </span>
+      <span className={tone}>
+        {!known
+          ? t('ds.mcpChecking')
+          : up
+            ? t('ds.mcpOn', { port, ms: status.latencyMs })
+            : t('ds.mcpOff', { port })}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * 外链统一走 <a target="_blank">。
+ * 主进程的 setWindowOpenHandler 会接管新窗口请求并交给系统浏览器，
+ * 既不会把应用窗口导航走，也不需要为「打开网址」单开一条 IPC。
+ */
+function ExternalTextLink({
+  href,
+  children
+}: {
+  href: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-0.5 text-[var(--c-accent)] hover:underline"
+    >
+      {children}
+      <ExternalLink size={9} className="shrink-0" />
+    </a>
   )
 }
 
@@ -835,10 +1063,14 @@ function TaskRow({
 
 function DatasetTable({
   datasets,
-  onDelete
+  onDelete,
+  onExport,
+  exportDisabled
 }: {
   datasets: DatasetRow[]
   onDelete: (id: number) => void
+  onExport: (id: number) => void
+  exportDisabled: boolean
 }): React.JSX.Element {
   const { t, locale } = useT()
   return (
@@ -874,13 +1106,23 @@ function DatasetTable({
                 {translateLabel(locale, d.group_name ?? d.source)}
               </td>
               <td className="px-3 py-2 text-right">
-                <button
-                  onClick={() => onDelete(d.id)}
-                  title={t('ds.deleteDataset')}
-                  className="rounded p-1 text-[var(--text-faint)] hover:bg-[var(--c-neg-tint)] hover:text-[var(--c-neg)]"
-                >
-                  <Trash2 size={12} />
-                </button>
+                <div className="flex items-center justify-end gap-0.5">
+                  <button
+                    onClick={() => onExport(d.id)}
+                    disabled={exportDisabled}
+                    title={t('ds.exportDataset')}
+                    className="rounded p-1 text-[var(--text-faint)] hover:bg-[var(--surface-3)] hover:text-[var(--c-accent)] disabled:opacity-40"
+                  >
+                    <Download size={12} />
+                  </button>
+                  <button
+                    onClick={() => onDelete(d.id)}
+                    title={t('ds.deleteDataset')}
+                    className="rounded p-1 text-[var(--text-faint)] hover:bg-[var(--c-neg-tint)] hover:text-[var(--c-neg)]"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
               </td>
             </tr>
           ))}

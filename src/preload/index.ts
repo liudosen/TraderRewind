@@ -70,11 +70,18 @@ const api = {
   saveCsvFile: (name: string, content: string) => ipcRenderer.invoke(IPC.FILE_SAVE_CSV, name, content),
 
   // ----- 数据源与下载 -----
-  listDataCatalog: () => ipcRenderer.invoke(IPC.DATA_LIST_CATALOG),
+  /** `force` 跳过主进程的 60 秒品种缓存（手动「刷新品种」用） */
+  listDataCatalog: (opts?: { force?: boolean }) => ipcRenderer.invoke(IPC.DATA_LIST_CATALOG, opts),
+  /** cTrader 本地 MCP 探活：只做 TCP 连接，供状态灯轮询 */
+  ctraderMcpStatus: () => ipcRenderer.invoke(IPC.DATA_MCP_STATUS),
   startDownload: (request: any) => ipcRenderer.invoke(IPC.DATA_DOWNLOAD, request),
   cancelDownload: (jobId: string) => ipcRenderer.invoke(IPC.DATA_CANCEL, jobId),
   listDownloadedDatasets: () => ipcRenderer.invoke(IPC.DATA_LIST_DATASETS),
   deleteDownloadedDataset: (id: number) => ipcRenderer.invoke(IPC.DATA_DELETE_DATASET, id),
+  /** 导出为独立 .db；ids 传 null = 全部 */
+  exportDatasetsDb: (ids: number[] | null) => ipcRenderer.invoke(IPC.DATA_EXPORT_DB, { ids }),
+  /** 从 .db 导入并合并进本地行情库 */
+  importDatasetsDb: () => ipcRenderer.invoke(IPC.DATA_IMPORT_DB),
 
   // ----- 应用设置（数据目录） -----
   getStorageInfo: () => ipcRenderer.invoke(IPC.SETTINGS_GET),
@@ -113,6 +120,27 @@ const api = {
   downloadUpdate: () => ipcRenderer.invoke(IPC.UPDATE_DOWNLOAD),
   installUpdate: () => ipcRenderer.invoke(IPC.UPDATE_INSTALL),
   openReleasePage: () => ipcRenderer.invoke(IPC.UPDATE_OPEN_RELEASE_PAGE),
+
+  // ----- cTrader Open API 凭据 -----
+  ctraderCred: {
+    /** 安全摘要：只含是否配置、尾号、剩余天数，不含任何密文 */
+    get: () => ipcRenderer.invoke(IPC.CTRADER_CRED_GET),
+    save: (input: {
+      clientId: string
+      clientSecret: string
+      accessToken?: string
+      refreshToken?: string
+      accountId?: number | null
+      environment?: 'live' | 'demo'
+    }) => ipcRenderer.invoke(IPC.CTRADER_CRED_SAVE, input),
+    clear: () => ipcRenderer.invoke(IPC.CTRADER_CRED_CLEAR),
+    /** 手动续期（5036 协议消息，不需要访问被阻断的 443） */
+    refresh: () => ipcRenderer.invoke(IPC.CTRADER_CRED_REFRESH),
+    authUrl: (redirectUri?: string) => ipcRenderer.invoke(IPC.CTRADER_CRED_AUTH_URL, redirectUri),
+    exchange: (params: { code: string; redirectUri?: string }) =>
+      ipcRenderer.invoke(IPC.CTRADER_CRED_EXCHANGE, params),
+    acceptToken: (text: string) => ipcRenderer.invoke(IPC.CTRADER_CRED_ACCEPT, text)
+  },
 
   // ----- 事件监听 -----
   on: (channel: string, callback: (...args: any[]) => void) => {

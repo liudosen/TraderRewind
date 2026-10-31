@@ -11,6 +11,7 @@ import { registerWindowHandlers } from './ipc/window-handlers'
 import { registerDataHandlers } from './ipc/data-handlers'
 import { registerSettingsHandlers } from './ipc/settings-handlers'
 import { registerUpdateHandlers } from './ipc/update-handlers'
+import { registerCtraderCredentialHandlers } from './ipc/ctrader-cred-handlers'
 import { scheduleStartupCheck } from './services/updater'
 import { initDatabases, closeDatabases } from './db/connection'
 import { sharedCtraderClient } from './services/ctrader-mcp'
@@ -149,6 +150,7 @@ if (!gotTheLock) {
     registerDataHandlers()
     registerSettingsHandlers()
     registerUpdateHandlers()
+    registerCtraderCredentialHandlers()
 
     createWindow()
 

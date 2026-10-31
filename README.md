@@ -79,12 +79,13 @@ TraderRewind 的做法是把行情遮住，只让你一根一根往前推：
 总收益（以 R 为单位）、平均每单、胜率、盈亏比、最大回撤、R 收益曲线，
 以及逐笔明细 —— **点任意一笔，图表会跳回那根 K 线并画出该笔的开仓线与关仓线**。
 
-### 数据源：三家公开接口，按类别分组
+### 数据源：直连你自己的经纪商
 
 ![数据源](docs/screenshots/data-source.png)
 
-Dukascopy 外汇（逐笔 tick）、OKX 与 Binance 加密（直接给 1 分钟 K 线），
-品种按「主要货币对 / 交叉盘 / 贵金属 / 加密市场」分组，可折叠、可整组勾选。
+cTrader（读本机桌面端，取你自己经纪商的真实报价）、OKX 与 Binance 加密接口。
+品种按「主要货币对 / 交叉盘 / 贵金属 / 指数 / 商品 / 股票 / 加密市场」分组，
+可折叠、可整组勾选；顶部有 MCP 状态灯，一眼看出本机 cTrader 通没通。
 
 ### 设置：图表外观全部可调
 
@@ -234,22 +235,45 @@ M1 / M5 / M15 / M30 / H1 / H4 / D1 / W1 / MN1 九个周期一键切换，还能�
 
 ### 六、数据源与下载
 
-**三个数据源**
+**两个来源：你的经纪商，或公开加密接口**
 
 | 数据源 | 类型 | 品种数 | 说明 |
 |---|---|---|---|
-| Dukascopy | 逐笔 tick | 23 | 主要货币对 / 交叉盘 / 贵金属，按小时文件下载后本地聚合成 1 分钟 |
+| cTrader | 1 分钟 K 线 | 193（随经纪商） | 直连本机 cTrader 桌面端内置的行情服务，取你自己经纪商的真实报价；走本地回环，不用代理 |
 | OKX | 1 分钟 K 线 | 12 | 现货 USDT 计价主流币，接口直接返回蜡烛，无需聚合 |
 | Binance | 1 分钟 K 线 | 12 | 同上，走 `data-api.binance.vision` 公共行情端点 |
 
-切换数据源会**自动清空已选品种** —— 三家的代码格式完全不同（`EURUSD` / `BTC-USDT` / `BTCUSDT`），
+> 早期版本的 Dukascopy 逐笔 tick 通道已在 0.3.0 下线：数据质量与下载速度都不如直接取经纪商报价。
+
+**cTrader 怎么连上**
+
+1. 装好 [cTrader 桌面端](https://www.ic.com/en/forex-trading-platform-ctrader/ctrader-windows) 并登录经纪商账户；
+2. 在 cTrader 里打开 `设置 → 应用程序 → MCP 设置 → 启用 MCP 服务器`（默认端口 9876）；
+3. 回到本软件，数据源面板的状态灯变绿即表示连通，品种表会自动换成经纪商的全部品种。
+
+没有 cTrader 账户可以在面板里直接点「注册 IC Markets」开户。端口可用环境变量
+`CTRADER_MCP_PORT` 覆盖。
+
+**MCP 状态灯**
+
+面板上那盏灯每 3 秒探一次本机端口：**绿 = 已连接（附端口与连接耗时）、红 = 端口无响应、
+灰 = 正在检测**。探活只做一次 TCP 连接，不建立 MCP 会话 —— 不会占用会话配额，
+也不打扰正在跑的下载任务。
+
+**品种表可能"不全"？**
+
+cTrader 的品种归经纪商所有，只有桌面端在跑的时候才拿得到。软件启动时如果 cTrader 还没开，
+会先退回内置的 23 个外汇品种并明确提示；等你把 cTrader 打开，状态灯探到之后会**自动补拉**，
+也可以随时点「刷新品种」手动重拉（会跳过 60 秒缓存）。
+
+切换数据源会**自动清空已选品种** —— 各家的代码格式完全不同（`EURUSD` / `BTC-USDT` / `BTCUSDT`），
 留着旧的选中项只会得到一堆「未知品种」。
 
 **品种列表**
 
-- 按类别分组：主要货币对 / 交叉盘 / 贵金属 / 加密市场
+- 按类别分组：主要货币对 / 交叉盘 / 贵金属 / 指数 / 商品 / 股票 / 加密市场 / 其它
 - 点表头折叠展开，折叠状态本地记忆，下次进来还是上次的样子
-- 表头右侧有一个「选中本组 / 取消本组」按钮，加密一组十几个币种不用一个个点
+- 表头右侧有一个「选中本组 / 取消本组」按钮，加密一组几十个币种不用一个个点
 - 支持按代码或中文名搜索
 
 **下载设置**
@@ -296,6 +320,20 @@ M1 / M5 / M15 / M30 / H1 / H4 / D1 / W1 / MN1 九个周期一键切换，还能�
 - 行情库几十上百 MB、训练库只有几百 KB，分开存之后备份和迁移都方便得多
 - 更换目录时，如果新目录还没有同名库文件，会自动把当前的复制过去；已经有则直接切换
 - 老版本的单库 `traderrewind.db` 会在首次启动时自动拆分成两个新库，原文件重命名为 `*.migrated`
+
+**导出 / 导入（.db）**
+
+数据集可以整包导出成一个**独立可携带的 sqlite 文件**，发给别人、丢 U 盘、放网盘都行；
+拿到文件的人直接导入即可，不需要连你的行情库。
+
+- **导出**：「已下载数据」表格每行一个导出按钮（单个数据集），标题栏「导出全部」一次打包。
+  文件里带 `export_meta`（格式标记 / 版本 / 导出时间 / 品种清单），不打开库也知道里面是什么。
+- **导入**：可多选文件一起导。按「品种 + 周期 + 来源」合并进已有数据集 ——
+  **区间外的新数据追加，同一时间戳的 K 线以导入文件为准覆盖**。重复导入同一个包不会
+  多出一份 EURUSD，根数也不会翻倍。
+- **坏文件挡在门外**：缺表、格式不认识、包版本比程序新，都会明确报错，而不是把库写坏。
+- 搬运走 sqlite 自己的 `ATTACH` + `INSERT ... SELECT`，不经过 JS 循环：
+  实测 60 万根（39 MB）导出 0.3 秒、导入 0.5 秒。
 
 ### 八、设置项
 
@@ -349,7 +387,7 @@ M1 / M5 / M15 / M30 / H1 / H4 / D1 / W1 / MN1 九个周期一键切换，还能�
 | 主进程 | TypeScript + better-sqlite3 | 同步 API 简单直接，几十万根 K 线的读写不卡 |
 | 渲染层 | React 18 + Zustand + Tailwind CSS | 状态集中管理，高频进度更新不会带着整棵树重渲染 |
 | 图表 | lightweight-charts v5（TradingView） | 体积小、Canvas 渲染、百万级数据量也流畅 |
-| 解压 | lzma（纯 JS） | Dukascopy 的 bi5 是 LZMA 压缩，纯 JS 实现免去原生编译 |
+| 取数 | cTrader 本地 MCP + OKX/Binance 公开接口 | 外汇取你自己经纪商的真实报价，加密取公开行情 |
 
 ## 项目结构
 
@@ -366,11 +404,14 @@ src/
       connection.ts    双库连接 + 旧库自动拆分迁移
       schema.ts        行情库 / 训练库两套 schema
       dataset-repo.ts  行情数据落库（增量合并）
-    ipc/               db / file / window / data / settings 五组 handler
+      kline-export.ts  数据集导出 / 导入（独立 .db）
+    ipc/               db / file / window / data / settings / ctrader 六组 handler
     services/
-      dukascopy.ts     外汇 tick 下载、解压、聚合成 K 线
-      candle-api.ts    OKX / Binance K 线分页下载
-    utils/             HTTP（代理 + keep-alive 连接池）、LZMA 解压
+      ctrader-mcp.ts      cTrader 本地 MCP 客户端（握手、翻页、会话释放）
+      candle-api.ts       cTrader / OKX / Binance 的统一 K 线下载器
+      ctrader-openapi.ts  cTrader Open API 客户端（备用取数通道）
+      doh.ts              DoH 解析，绕开 DNS 污染
+    utils/             HTTP（代理 + keep-alive 连接池）
   preload/             contextBridge，向渲染进程暴露受控 API
   renderer/src/
     components/
@@ -383,24 +424,30 @@ src/
 
 ## 行情数据来源
 
-**Dukascopy 外汇**
+**cTrader（本机 MCP）**
+
+cTrader 桌面端（5.9+）内置了一个 MCP 服务，软件直接去找它要历史 K 线：
 
 ```
-http://datafeed.dukascopy.com/datafeed/{SYMBOL}/{YYYY}/{MM0}/{DD}/{HH}h_ticks.bi5
+http://127.0.0.1:9876/mcp/
 ```
 
-- `MM0` 是 **0 索引月份**（`00` = 1 月），写成 1 索引会导致整月错位
-- 文件为 LZMA(alone) 压缩；解压后每条 tick 20 字节，**全部大端序**：
-  `int32 时间偏移(ms)` + `uint32 ask` + `uint32 bid` + `float32 ask量` + `float32 bid量`
-- 价格需除以 `10^digits`（EURUSD 为 5 位，JPY 系为 3 位）
-- 走 **HTTP** 而非 HTTPS：部分网络下 HTTPS 握手会被中断
-- 中国大陆直连不稳定，建议配置本地代理
+- 走 JSON-RPC 2.0 over HTTP；工具 `get_trendbars` 就是官方历史 K 线接口
+- **单次最多 1000 根**，且返回的是「范围内靠近 `to` 的最后一页」，所以翻页只能从 `to` 往过去倒退
+- 时间参数是秒级 ISO（`2024-11-04T23:58:00Z`）；周期写 `m1 / m5 / m15 / m30 / h1 / h4 / d1`，不是分钟数
+- 目标是 `127.0.0.1`，**必须直连** —— 套上系统代理会被转发到代理网关而 502
+- 服务端同一时刻只认一个会话，且会话不会自动过期；退出前要显式 `DELETE` 释放，
+  否则每启动一次就泄漏一个，攒到上限后连握手都会被拒
+- 拿不到实时品种表时退回内置清单，界面会明说当前用的是兜底数据
 
 **OKX / Binance**
 
 两家都走公开 K 线接口，用 `1m` 周期分页拉取。它们的翻页方向是**相反的**：
 OKX 的 `after` 往更旧的时间走，Binance 的 `startTime` 往更新的时间走。
 所以每个适配器各自维护自己的游标逻辑，调度层只认「给定游标拿下一页」这一个抽象。
+
+> 历史版本（≤ 0.2.x）走过 Dukascopy 的 bi5 逐笔 tick，0.3.0 起已下线，
+> `src/main/services/bi5.ts` 仅为遗留代码，不参与下载。
 
 > 行情数据版权归各自提供方所有。本项目仅用于个人学习与研究，不构成任何投资建议。
 
@@ -460,5 +507,5 @@ You may obtain a copy of the License at
 | [Zustand](https://github.com/pmndrs/zustand) | 状态管理 | MIT |
 | [Tailwind CSS](https://tailwindcss.com/) | 样式 | MIT |
 | [lucide-react](https://lucide.dev/) | 图标 | ISC |
-| [Dukascopy](https://www.dukascopy.com/) | 外汇历史 tick 数据 | 公开接口 |
+| [cTrader](https://ctrader.com/) | 外汇 / CFD 行情与历史 K 线（本机 MCP） | 经纪商服务 |
 | [OKX](https://www.okx.com/) / [Binance](https://www.binance.com/) | 加密市场 K 线 | 公开接口 |

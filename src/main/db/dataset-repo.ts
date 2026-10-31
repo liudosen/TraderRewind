@@ -22,8 +22,8 @@ export interface SaveBarsParams {
   }>
 }
 
-/** 该数据源对应的分组名 */
-function groupNameFor(source: string, market: string): string {
+/** 该数据源对应的分组名（导出 / 导入也要用它保持分组一致） */
+export function groupNameFor(source: string, market: string): string {
   if (source === 'ctrader') return 'cTrader 外汇'
   if (source === 'okx') return 'OKX 加密'
   if (source === 'binance') return 'Binance 加密'
@@ -33,7 +33,7 @@ function groupNameFor(source: string, market: string): string {
 }
 
 /** 获取或创建分组 */
-function ensureGroup(db: any, name: string, kind: string): number {
+export function ensureGroup(db: any, name: string, kind: string): number {
   const existing = db.prepare('SELECT id FROM groups WHERE name = ?').get(name) as { id: number } | undefined
   if (existing) return existing.id
   const result = db

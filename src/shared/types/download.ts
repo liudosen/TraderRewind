@@ -122,6 +122,45 @@ export interface DownloadStartResult {
   error?: string
 }
 
+/**
+ * cTrader 本地 MCP 探活结果（界面状态灯用）。
+ *
+ * 只反映「端口有没有在监听」—— 没勾选启用 MCP 时 cTrader 根本不会开这个
+ * 端口，所以足以区分「软件开着且 MCP 可用」和「没开 / 没启用」。
+ */
+export interface McpStatus {
+  up: boolean
+  port: number
+  /** 建立 TCP 连接的耗时（毫秒） */
+  latencyMs: number
+  error?: string
+}
+
+/** 导出 .db 的结果 */
+export interface DbExportResult {
+  ok: boolean
+  /** 用户取消了保存对话框（不是错误，别弹红字） */
+  canceled?: boolean
+  path?: string
+  datasets?: number
+  bars?: number
+  bytes?: number
+  error?: string
+}
+
+/** 导入 .db 的结果 */
+export interface DbImportResult {
+  ok: boolean
+  canceled?: boolean
+  files?: number
+  /** 新建的数据集数 */
+  added?: number
+  /** 合并进已有数据集的数量 */
+  merged?: number
+  bars?: number
+  error?: string
+}
+
 /** 目录项（供 UI 选择） */
 export interface DataSourceDescriptor {
   id: DataSourceId
@@ -137,4 +176,12 @@ export interface DataSourceDescriptor {
    */
   kind: 'tick' | 'candle'
   instruments: InstrumentInfo[]
+  /**
+   * instruments 是否为「实时拉取」的结果。
+   *
+   * cTrader 的品种表归经纪商所有，只有桌面端在跑才能拿到；拿不到时退化成
+   * 内置的外汇清单。界面不能靠「数量少」去猜 —— 万一哪天经纪商真的只给
+   * 十几个品种就误报了。让主进程明确告诉我们这一次是实时数据还是兜底数据。
+   */
+  live?: boolean
 }

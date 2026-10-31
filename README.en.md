@@ -85,13 +85,14 @@ Total return in R, average per trade, win rate, profit factor, max drawdown, the
 curve and a per-trade breakdown. **Click any trade and the chart jumps back to that bar,
 drawing its entry and exit lines.**
 
-### Data sources: three public endpoints, grouped by category
+### Data sources: your own broker, straight from the desktop app
 
 ![Data sources](docs/screenshots/data-source.png)
 
-Dukascopy FX (tick data), OKX and Binance crypto (1-minute candles straight from the API).
-Instruments are grouped into majors / crosses / metals / crypto — collapsible, and each group
-can be selected in one click.
+cTrader (your broker's real quotes, read from the local desktop app), plus OKX and Binance crypto.
+Instruments are grouped into majors / crosses / metals / indices / commodities / stocks / crypto —
+collapsible, and each group can be selected in one click. A status lamp at the top tells you
+whether the local cTrader MCP server is reachable.
 
 ### Settings: every chart colour is adjustable
 
@@ -257,23 +258,48 @@ Months later you can still reconstruct the exact conditions you traded under.
 
 ### 6. Data sources and downloads
 
-**Three sources**
+**Two sources: your own broker, or public crypto endpoints**
 
 | Source | Type | Instruments | Notes |
 |---|---|---|---|
-| Dukascopy | tick data | 23 | Majors / crosses / metals; hourly files aggregated locally into 1-minute bars |
+| cTrader | 1-minute candles | 193 (broker-dependent) | Talks to the MCP server inside your local cTrader desktop app, so you get your own broker's real quotes; loopback only, no proxy |
 | OKX | 1-minute candles | 12 | USDT-quoted spot majors; the API returns candles directly |
 | Binance | 1-minute candles | 12 | Same, via the `data-api.binance.vision` public endpoint |
 
-Switching sources **clears your selection** — the three use incompatible ticker formats
+> The Dukascopy tick feed from early versions was removed in 0.3.0 — fetching your broker's
+> own quotes is both faster and cleaner than a public tick archive.
+
+**Connecting cTrader**
+
+1. Install [cTrader desktop](https://www.ic.com/en/forex-trading-platform-ctrader/ctrader-windows) and log in to your broker account;
+2. In cTrader open `Settings → Applications → MCP settings → Enable MCP server` (default port 9876);
+3. Back here, the status lamp turns green and the instrument list switches to the broker's full catalogue.
+
+No cTrader account yet? The panel has a direct "Open an IC Markets account" link.
+The port can be overridden with the `CTRADER_MCP_PORT` environment variable.
+
+**MCP status lamp**
+
+The lamp probes the local port every 3 seconds: **green = connected (port + latency shown),
+red = nothing listening, grey = still checking**. The probe is a single TCP connect — it never
+establishes an MCP session, so it doesn't burn session quota or disturb a running download.
+
+**Why the instrument list may look short**
+
+cTrader's catalogue belongs to the broker and is only reachable while the desktop app is running.
+If the app started before cTrader, it falls back to the 23 built-in FX symbols and says so.
+Once cTrader comes up the lamp notices and **refetches automatically**; you can also hit
+"Refresh symbols" at any time (it skips the 60-second cache).
+
+Switching sources **clears your selection** — they use incompatible ticker formats
 (`EURUSD` / `BTC-USDT` / `BTCUSDT`), and keeping stale selections would only produce a pile of
 "unknown symbol" errors.
 
 **Instrument list**
 
-- Grouped into majors / crosses / metals / crypto
+- Grouped into majors / crosses / metals / indices / commodities / stocks / crypto / other
 - Click a header to collapse or expand; the state is remembered across restarts
-- A "select group" button on each header — worth it for the dozen-plus crypto pairs
+- A "select group" button on each header — worth it for the dozens of crypto pairs
 - Search by ticker or by name
 
 **Download settings**
@@ -329,6 +355,24 @@ Data lives in two independent SQLite databases, **each with its own configurable
 - The old single-file `traderrewind.db` is split into the two new databases on first launch and
   the original is renamed to `*.migrated`
 
+**Export / import (.db)**
+
+Any dataset can be packaged into a **self-contained, portable SQLite file** — hand it to a friend,
+drop it on a USB stick, put it in cloud storage. Whoever receives it just imports it; no need to
+touch your market database.
+
+- **Export**: one button per row in the downloaded-datasets table, plus "Export all" in the header.
+  The file carries an `export_meta` block (format marker, version, export time, symbol list), so you
+  can tell what's inside without opening it.
+- **Import**: multi-select is supported. Data is merged into an existing dataset by
+  «symbol + timeframe + source» — **new ranges are appended, and candles sharing a timestamp are
+  overwritten by the incoming file**. Re-importing the same package never creates a second EURUSD
+  and never doubles the row count.
+- **Bad files are rejected**: missing tables, unknown format, or a package exported by a newer
+  version all fail with a clear message instead of corrupting the database.
+- The move goes through SQLite's own `ATTACH` + `INSERT ... SELECT`, not a JS loop:
+  600k candles (39 MB) export in 0.3 s and import in 0.5 s.
+
 ### 8. Settings
 
 **General**
@@ -383,7 +427,7 @@ Data lives in two independent SQLite databases, **each with its own configurable
 | Main process | TypeScript + better-sqlite3 | Synchronous API keeps hundreds of thousands of bars simple and fast |
 | Renderer | React 18 + Zustand + Tailwind CSS | Centralised state; high-frequency progress updates don't re-render the whole tree |
 | Charts | lightweight-charts v5 (TradingView) | Small, canvas-based, smooth even with very large series |
-| Decompression | lzma (pure JS) | Dukascopy's bi5 files are LZMA-compressed; a pure-JS decoder avoids native builds |
+| Feeds | cTrader local MCP + OKX/Binance public APIs | FX quotes come from your own broker; crypto from public endpoints |
 
 ## Project layout
 
@@ -400,11 +444,14 @@ src/
       connection.ts    Dual-database connections + migration of the old single file
       schema.ts        Schemas for the market and training databases
       dataset-repo.ts  Persists downloaded market data (incremental merge)
-    ipc/               Five handler groups: db / file / window / data / settings
+      kline-export.ts  Dataset export / import as a standalone .db
+    ipc/               Six handler groups: db / file / window / data / settings / ctrader
     services/
-      dukascopy.ts     FX tick download, decompression, aggregation into candles
-      candle-api.ts    Paged kline downloads from OKX / Binance
-    utils/             HTTP (proxy + keep-alive pool), LZMA decompression
+      ctrader-mcp.ts     cTrader local MCP client (handshake, paging, session release)
+      candle-api.ts      Unified kline downloader for cTrader / OKX / Binance
+      ctrader-openapi.ts cTrader Open API client (alternative data channel)
+      doh.ts             DoH resolver that sidesteps DNS poisoning
+    utils/             HTTP (proxy + keep-alive pool)
   preload/             contextBridge exposing a controlled API to the renderer
   renderer/src/
     components/
@@ -417,19 +464,24 @@ src/
 
 ## Where the data comes from
 
-**Dukascopy FX**
+**cTrader (local MCP)**
+
+cTrader desktop (5.9+) ships an MCP server that this app talks to directly:
 
 ```
-http://datafeed.dukascopy.com/datafeed/{SYMBOL}/{YYYY}/{MM0}/{DD}/{HH}h_ticks.bi5
+http://127.0.0.1:9876/mcp/
 ```
 
-- `MM0` is a **zero-indexed month** (`00` = January). Treating it as 1-indexed shifts everything
-  by a full month
-- Files are LZMA(alone) compressed; after decompression each tick is 20 bytes, **all big-endian**:
-  `int32 time offset (ms)` + `uint32 ask` + `uint32 bid` + `float32 ask volume` + `float32 bid volume`
-- Prices must be divided by `10^digits` (5 digits for EURUSD, 3 for JPY pairs)
-- Uses **HTTP** rather than HTTPS: on some networks the HTTPS handshake is interrupted
-- Direct connections are unstable from mainland China; configure a local proxy
+- JSON-RPC 2.0 over HTTP; the `get_trendbars` tool is the official historical-kline endpoint
+- **At most 1000 bars per call**, and it returns the last page *nearest to `to`* — so paging can
+  only walk backwards from `to`
+- Timestamps are second-precision ISO (`2024-11-04T23:58:00Z`); timeframes are
+  `m1 / m5 / m15 / m30 / h1 / h4 / d1`, not minute counts
+- The target is `127.0.0.1`, so it **must** be a direct connection — a system proxy will bounce it
+  off the proxy gateway and return 502
+- Only one session is allowed at a time and sessions never expire on their own; a `DELETE` on exit
+  is mandatory, otherwise every launch leaks one until handshakes start being rejected
+- If the live catalogue can't be fetched, the built-in list is used and the UI says so
 
 **OKX / Binance**
 
@@ -437,6 +489,9 @@ Both use public kline endpoints, paging with the `1m` interval. Their pagination
 **opposite directions**: OKX's `after` walks backwards in time, Binance's `startTime` walks
 forwards. Each adapter therefore owns its own cursor logic, while the scheduler only knows the
 single abstraction "given a cursor, give me the next page".
+
+> Versions ≤ 0.2.x used Dukascopy bi5 tick data; that path was removed in 0.3.0.
+> `src/main/services/bi5.ts` is legacy code only and is not part of any download.
 
 > Market data remains the property of the respective providers. This project is for personal
 > study and research only and is not investment advice.
@@ -498,5 +553,5 @@ You may obtain a copy of the License at
 | [Zustand](https://github.com/pmndrs/zustand) | State management | MIT |
 | [Tailwind CSS](https://tailwindcss.com/) | Styling | MIT |
 | [lucide-react](https://lucide.dev/) | Icons | ISC |
-| [Dukascopy](https://www.dukascopy.com/) | Historical FX tick data | public endpoint |
+| [cTrader](https://ctrader.com/) | FX / CFD quotes and historical candles (local MCP) | broker service |
 | [OKX](https://www.okx.com/) / [Binance](https://www.binance.com/) | Crypto klines | public endpoint |

@@ -6,7 +6,10 @@ import { create } from 'zustand'
 import type {
   BarTimeframe,
   DataSourceDescriptor,
-  DownloadSnapshot
+  DbExportResult,
+  DbImportResult,
+  DownloadSnapshot,
+  McpStatus
 } from '@shared/types/download'
 import { dateOffsetISO, todayISO } from '../utils/format'
 
@@ -29,7 +32,12 @@ interface DownloadState {
   // 目录
   catalog: DataSourceDescriptor[]
   catalogLoaded: boolean
+  /** 正在重新拉取目录（「刷新品种」按钮转圈用） */
+  refreshingCatalog: boolean
   sourceId: string
+
+  /** cTrader 本地 MCP 探活结果；null = 还没探过 */
+  mcpStatus: McpStatus | null
 
   // 选择
   selected: string[]
@@ -50,6 +58,10 @@ interface DownloadState {
   loadingDatasets: boolean
 
   loadCatalog: () => Promise<void>
+  /** 重新拉目录，`force` 跳过主进程 60 秒缓存 */
+  refreshCatalog: (opts?: { force?: boolean }) => Promise<void>
+  /** 探活 cTrader 本地 MCP，供状态灯轮询；连上时顺手补齐品种表 */
+  checkMcpStatus: () => Promise<void>
   toggleSymbol: (symbol: string) => void
   setSelected: (symbols: string[]) => void
   clearSelection: () => void
@@ -64,6 +76,10 @@ interface DownloadState {
   bindProgress: () => () => void
   loadDatasets: () => Promise<void>
   removeDataset: (id: number) => Promise<void>
+  /** 导出为独立 .db；ids 传 null = 全部 */
+  exportDatasetsDb: (ids: number[] | null) => Promise<DbExportResult>
+  /** 从 .db 导入，成功后自动刷新已下载列表 */
+  importDatasetsDb: () => Promise<DbImportResult>
 }
 
 // 代理设置的落库防抖：用户逐字符输入时不要每次都写一遍
@@ -76,10 +92,22 @@ function scheduleProxySave(value: string): void {
   }, 500)
 }
 
+/**
+ * 上一次尝试补拉品种表的时间。
+ *
+ * 状态灯每 3 秒探一次活，而「连上了但品种表没拉到」是个会持续存在的状态
+ * （比如 session 被另一个窗口占着）。不加节流就会每 3 秒打一次 get_symbols，
+ * 既刷屏又可能把服务端拖慢，所以同一个状态 20 秒内只重试一次。
+ */
+let lastCatalogTryAt = 0
+const CATALOG_RETRY_MS = 20_000
+
 export const useDownloadStore = create<DownloadState>((set, get) => ({
   catalog: [],
   catalogLoaded: false,
+  refreshingCatalog: false,
   sourceId: 'ctrader',
+  mcpStatus: null,
 
   // 不预选任何品种：替用户勾上 EURUSD 会让人误以为「已经选好了」，
   // 或者不知不觉下了一份自己没要的数据。让用户自己选。
@@ -124,6 +152,64 @@ export const useDownloadStore = create<DownloadState>((set, get) => ({
     } catch (e: any) {
       set({ catalogLoaded: true, error: e?.message ?? String(e) })
     }
+  },
+
+  /**
+   * 只重新拉取目录，不动代理/并发这些用户设置。
+   *
+   * 存在的理由：目录在应用启动时只加载一次，而 cTrader 的品种表必须
+   * 等桌面端跑起来才有。如果用户先开软件、后开 cTrader，界面就会一直
+   * 挂着启动时那份 23 个品种的内置清单 —— 看起来像「品种缺失」，
+   * 实际只是没人再去拉一次。
+   *
+   * @param opts.force 跳过主进程的 60 秒缓存。手动点「刷新品种」时用，
+   *   否则用户刚把 cTrader 打开、点刷新，拿到的还是 40 秒前的失败结果。
+   */
+  refreshCatalog: async (opts) => {
+    if (get().refreshingCatalog) return
+    lastCatalogTryAt = Date.now()
+    set({ refreshingCatalog: true })
+    try {
+      const catalog = await window.api.listDataCatalog({ force: !!opts?.force })
+      set({ catalog: catalog ?? [], refreshingCatalog: false, error: null })
+    } catch (e: any) {
+      set({ refreshingCatalog: false, error: e?.message ?? String(e) })
+    }
+  },
+
+  /**
+   * 探活 + 自动补品种。
+   *
+   * 两件事绑在一起是有意的：用户开 cTrader 这个动作，同时意味着
+   * 「状态灯该变绿」和「品种表该变成 193 个」。如果只更新灯不补表，
+   * 用户会看到一个绿色的灯配一份缺斤少两的清单，更让人困惑。
+   */
+  checkMcpStatus: async () => {
+    let status: McpStatus | null = null
+    try {
+      status = (await window.api.ctraderMcpStatus()) as McpStatus
+    } catch {
+      status = null
+    }
+    const prev = get().mcpStatus
+    // 只在「连没连上 / 端口」变化时写回。latencyMs 每次探活都不一样，
+    // 照写的话整个下载面板每 3 秒重渲染一次（左侧几百行品种），
+    // 滚动会明显发涩 —— 而这个数值对用户并没有时效性。
+    if (!prev || prev.up !== status?.up || prev.port !== status?.port) {
+      set({ mcpStatus: status })
+    }
+
+    if (!status?.up) return
+
+    // 首次目录还没回来时先等着：loadCatalog 本身就会带上品种表，
+    // 这时候再补拉一次等于对同一个 MCP session 并发发两条 get_symbols。
+    if (!get().catalogLoaded) return
+
+    const ct = get().catalog.find((s) => s.id === 'ctrader')
+    const needCatalog = !prev?.up || !ct?.live
+    if (!needCatalog) return
+    if (Date.now() - lastCatalogTryAt < CATALOG_RETRY_MS) return
+    await get().refreshCatalog({ force: true })
   },
 
   toggleSymbol: (symbol) => {
@@ -266,5 +352,32 @@ export const useDownloadStore = create<DownloadState>((set, get) => ({
   removeDataset: async (id) => {
     await window.api.deleteDownloadedDataset(id)
     await get().loadDatasets()
+  },
+
+  /**
+   * 导出。
+   *
+   * 不在这里吞掉「用户取消」：取消和失败在界面上是两种完全不同的反馈，
+   * 取消不该弹红字。所以原样把结果交回去，由调用方决定怎么显示。
+   */
+  exportDatasetsDb: async (ids) => {
+    try {
+      return (await window.api.exportDatasetsDb(ids)) as DbExportResult
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) }
+    }
+  },
+
+  importDatasetsDb: async () => {
+    try {
+      const result = (await window.api.importDatasetsDb()) as DbImportResult
+      // 导入会新增 / 扩展数据集，列表必须重拉，否则界面还停在导入前的样子
+      if (result?.ok || (result?.added ?? 0) > 0 || (result?.merged ?? 0) > 0) {
+        await get().loadDatasets()
+      }
+      return result
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) }
+    }
   }
 }))

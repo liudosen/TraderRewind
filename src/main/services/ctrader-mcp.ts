@@ -14,6 +14,7 @@
 // ============================================================
 
 import http from 'node:http'
+import net from 'node:net'
 
 export interface CtraderBar {
   time: number
@@ -64,24 +65,73 @@ export const DEFAULT_CTRADER_MCP_PORT = 9876
 /**
  * 全局共享的客户端。
  *
- * 服务端同一时刻只认一个活跃 session（再 initialize 会被 404 拒掉），
- * 所以品种枚举和 K 线下载必须复用同一个实例，各自 new 一个会互相踢。
+ * 本地模式下，服务端同一时刻只认一个活跃 session（再 initialize 会被
+ * 404 拒掉），所以品种枚举和 K 线下载必须复用同一个实例，各自 new 一个
+ * 会互相踢。
+ *
+ * 远程模式同理复用，但用的是「端点 + token 尾号」做指纹：
+ * 用户换 token 后应当重建连接，不能拿旧凭据的会话继续用。
  */
 let sharedClient: CtraderMcpClient | null = null
-let sharedPort: number | null = null
+let sharedKey: string | null = null
 
 export function resolveCtraderPort(): number {
   const raw = Number(process.env.CTRADER_MCP_PORT)
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_CTRADER_MCP_PORT
 }
 
-export function sharedCtraderClient(): CtraderMcpClient {
-  const port = resolveCtraderPort()
-  if (!sharedClient || sharedPort !== port) {
-    sharedClient = new CtraderMcpClient(port)
-    sharedPort = port
+export function sharedCtraderClient(remote: RemoteMcpOptions | null = null): CtraderMcpClient {
+  const key = remote ? `remote|${remote.url}|${remote.token.slice(-6)}` : `local|${resolveCtraderPort()}`
+  if (!sharedClient || sharedKey !== key) {
+    sharedClient = remote
+      ? new CtraderMcpClient(DEFAULT_CTRADER_MCP_PORT, '/mcp/', remote)
+      : new CtraderMcpClient(resolveCtraderPort())
+    sharedKey = key
   }
   return sharedClient
+}
+
+/** 探活结果。up=true 表示端口在监听，也就是 cTrader 正开着且 MCP 已启用。 */
+export interface McpProbeResult {
+  up: boolean
+  port: number
+  /** 建立 TCP 连接耗时（毫秒）；失败时是超时/拒绝的耗时，用来区分「拒绝」和「超时」 */
+  latencyMs: number
+  error?: string
+}
+
+/**
+ * 轻量探活 —— 只做一次 TCP 连接，不握手、不建会话。
+ *
+ * 为什么不能用 CtraderMcpClient.ping()：那个方法在已有 session 时直接返回
+ * ok，压根不发网络请求。状态灯要反映「用户此刻有没有开着 cTrader」，
+ * 用户把软件关掉之后 session 对象还在，灯就会一直绿着 —— 比不显示更糟。
+ *
+ * 也不用 initialize 探活：cTrader 的 session 表有上限且不会自动过期，
+ * 每几秒 initialize 一次会迅速把配额吃光。TCP 连接则完全无副作用，
+ * 端口在监听就说明 MCP 服务在跑（没勾选启用时这个端口根本不会开）。
+ */
+export async function probeLocalMcp(
+  port: number = resolveCtraderPort(),
+  timeoutMs = 1200
+): Promise<McpProbeResult> {
+  const started = Date.now()
+  return new Promise<McpProbeResult>((resolve) => {
+    let settled = false
+    const done = (up: boolean, error?: string): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve({ up, port, latencyMs: Date.now() - started, error })
+    }
+    const socket = net.connect({ host: '127.0.0.1', port })
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => done(true))
+    socket.once('timeout', () => done(false, `连接 127.0.0.1:${port} 超时`))
+    socket.once('error', (e: NodeJS.ErrnoException) => {
+      done(false, e.code === 'ECONNREFUSED' ? `端口 ${port} 未监听` : e.message)
+    })
+  })
 }
 
 /** 毫秒 → "2024-11-04T23:58:00Z"（cTrader 只认秒级 ISO） */
@@ -95,30 +145,83 @@ function parseIso(ts: string): number {
   return Number.isFinite(t) ? Math.floor(t / 1000) : NaN
 }
 
+/**
+ * 远程 MCP 端点配置。
+ *
+ * cTrader 的 Remote MCP 与本地版的区别只在传输层：同样是 JSON-RPC，
+ * 只是地址变成 https，并且要多带一个 Bearer token。
+ * 另外它按用途拆成多个路径（/trading/mcp、/data/mcp），
+ * 我们要的只是行情，所以应当指向 data 那一条 —— 那条不带下单能力。
+ */
+export interface RemoteMcpOptions {
+  url: string
+  token: string
+}
+
 export class CtraderMcpClient {
   private readonly port: number
   private readonly path: string
+  private readonly remote: RemoteMcpOptions | null
   private sessionId: string | null = null
   private protocolVersion: string | null = null
   private rpcId = 0
 
-  constructor(port: number = DEFAULT_CTRADER_MCP_PORT, path = '/mcp/') {
+  constructor(
+    port: number = DEFAULT_CTRADER_MCP_PORT,
+    path = '/mcp/',
+    remote: RemoteMcpOptions | null = null
+  ) {
     this.port = port
     this.path = path
+    this.remote = remote
   }
 
   /** 发一个 HTTP POST，返回 { headers, body } */
-  private post(payload: unknown, timeoutMs: number): Promise<{ headers: http.IncomingHttpHeaders; body: string }> {
-    return new Promise((resolve, reject) => {
-      const data = Buffer.from(JSON.stringify(payload), 'utf8')
-      const headers: Record<string, string | number> = {
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-        'Content-Length': data.length
-      }
-      if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId
-      if (this.protocolVersion) headers['MCP-Protocol-Version'] = this.protocolVersion
+  private async post(
+    payload: unknown,
+    timeoutMs: number
+  ): Promise<{ headers: http.IncomingHttpHeaders; body: string }> {
+    const data = Buffer.from(JSON.stringify(payload), 'utf8')
+    const headers: Record<string, string | number> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      'Content-Length': data.length
+    }
+    if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId
+    if (this.protocolVersion) headers['MCP-Protocol-Version'] = this.protocolVersion
 
+    // ---- 远程分支：https + Bearer ----
+    if (this.remote) {
+      headers['Authorization'] = `Bearer ${this.remote.token}`
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        const res = await fetch(this.remote.url, {
+          method: 'POST',
+          headers: headers as Record<string, string>,
+          body: data,
+          signal: controller.signal
+        })
+        const body = await res.text()
+        return {
+          headers: {
+            'mcp-session-id': res.headers.get('mcp-session-id') ?? undefined,
+            'content-type': res.headers.get('content-type') ?? undefined
+          } as http.IncomingHttpHeaders,
+          body
+        }
+      } catch (e) {
+        throw new Error(
+          `无法连接 cTrader Remote MCP（${this.remote.url}）：${(e as Error).message}。` +
+            `该域名在部分网络下会被阻断，请确认网络可达或改用 Open API 凭据`
+        )
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+
+    // ---- 本地分支：127.0.0.1，必须直连，不能套代理 ----
+    return new Promise((resolve, reject) => {
       const req = http.request(
         { host: '127.0.0.1', port: this.port, path: this.path, method: 'POST', headers },
         (res) => {
@@ -303,6 +406,26 @@ export class CtraderMcpClient {
     const sid = this.sessionId
     if (!sid) return
     this.sessionId = null
+
+    const headers: Record<string, string> = {
+      'Mcp-Session-Id': sid,
+      'MCP-Protocol-Version': this.protocolVersion ?? ''
+    }
+
+    // 远程端点同样要显式收尾，否则远程侧也会累积幽灵会话
+    if (this.remote) {
+      try {
+        headers['Authorization'] = `Bearer ${this.remote.token}`
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 4000)
+        await fetch(this.remote.url, { method: 'DELETE', headers, signal: controller.signal })
+        clearTimeout(timer)
+      } catch {
+        /* 收尾失败不影响退出 */
+      }
+      return
+    }
+
     await new Promise<void>((resolve) => {
       const req = http.request(
         {
@@ -310,7 +433,7 @@ export class CtraderMcpClient {
           port: this.port,
           path: this.path,
           method: 'DELETE',
-          headers: { 'Mcp-Session-Id': sid, 'MCP-Protocol-Version': this.protocolVersion ?? '' }
+          headers
         },
         (res) => {
           res.resume()

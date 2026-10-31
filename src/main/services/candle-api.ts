@@ -25,6 +25,13 @@ import { fetchBuffer, describeProxyProblem } from '../utils/http'
 import { SpeedMeter } from '../utils/speed-meter'
 import { saveDownloadedBars } from '../db/dataset-repo'
 import { sharedCtraderClient } from './ctrader-mcp'
+import { CtraderOpenApiClient } from './ctrader-openapi'
+import {
+  loadCredentials,
+  credentialsExpired,
+  updateTokens,
+  type StoredOpenApiCredentials
+} from './ctrader-credentials'
 
 /** 一根 1 分钟 K 线（时间单位为秒，与库里一致） */
 interface Candle {
@@ -199,6 +206,166 @@ const binanceAdapter: CandleAdapter = {
 //  4) 数据来自用户自己的经纪商（IC Markets），forex/metal，不是 crypto
 //  5) 客户端全局单例：服务端只认一个 session，各自 new 会互相踢掉
 // ------------------------------------------------------------
+// ------------------------------------------------------------
+// cTrader 双后端：Open API 优先，本地 MCP 兜底
+//
+// 为什么要有两条：Open API 不需要 cTrader 客户端在运行，是「开机就能下」
+// 的正解；但它的凭据需要用户授权一次。MCP 反过来 —— 零配置，却必须
+// 让桌面端一直开着。所以按「有凭据就走 Open API，没有或连不上才回退
+// MCP」的顺序，让两种用户都能用。
+//
+// 两个后端有个本质差异：Open API 要 symbolId，MCP 要 symbolName。
+// 所以这里维护一份「规范化名称 → symbolId」的缓存，第一次用到时拉一次
+// 品种列表。规范化的原因见 normalizeSymbol。
+// ------------------------------------------------------------
+
+let openApiClient: CtraderOpenApiClient | null = null
+let openApiKey = ''
+
+/** 凭据读盘要解密，每页都读太浪费；10 秒内的重复调用走缓存 */
+let cachedCreds: { value: StoredOpenApiCredentials | null; at: number } | null = null
+
+async function currentCredentials(): Promise<StoredOpenApiCredentials | null> {
+  if (cachedCreds && Date.now() - cachedCreds.at < 10_000) return cachedCreds.value
+  const value = await loadCredentials()
+  cachedCreds = { value, at: Date.now() }
+  return value
+}
+
+/** 用户改了凭据之后要清缓存，否则旧凭据会继续用到过期 */
+export function invalidateCtraderCredentials(clearSymbols = false): void {
+  cachedCreds = null
+  // 续期只换 token，symbolId 与账户绑定不会变，所以默认保留映射缓存
+  if (clearSymbols) symbolIdCache.clear()
+}
+
+/** 提前多久续期。留 7 天是为了给失败重试留余地，不必卡到最后一刻 */
+const REFRESH_AHEAD_MS = 7 * 86_400_000
+
+const symbolIdCache = new Map<string, number>()
+
+/**
+ * 品种名归一化。
+ *
+ * 同一个品种在不同地方写法不同：cTrader 的 symbolName 常用 "EUR/USD"，
+ * 而界面上、库里存的是 "EURUSD"。去掉分隔符再转大写，两边就能对上。
+ */
+function normalizeSymbol(name: string): string {
+  return name.replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+}
+
+async function resolveSymbolId(
+  client: CtraderOpenApiClient,
+  accountId: number,
+  symbol: string
+): Promise<number> {
+  const key = normalizeSymbol(symbol)
+  const hit = symbolIdCache.get(key)
+  if (hit) return hit
+
+  const list = await client.listSymbols(accountId)
+  symbolIdCache.clear()
+  for (const s of list) {
+    symbolIdCache.set(normalizeSymbol(s.symbolName), s.symbolId)
+  }
+
+  const id = symbolIdCache.get(key)
+  if (!id) throw new Error(`该 cTrader 账户下没有品种 ${symbol}`)
+  return id
+}
+
+/**
+ * 提前续期 accessToken。
+ *
+ * 走的是 Open API 协议内的 ProtoOARefreshTokenReq（2173），跑在 5036
+ * 连接上 —— 不经过 openapi.ctrader.com，所以在 443 被阻断的网络下照样
+ * 能续。refreshToken 本身没有过期时间，只要这一次成功，就能一直续下去。
+ *
+ * 失败策略：如果旧 token 其实还没到期，就继续用旧的、下次再试；
+ * 真过期了才报错让用户重新授权。这样偶发网络抖动不会直接打断下载。
+ */
+async function refreshCredentials(
+  creds: StoredOpenApiCredentials
+): Promise<StoredOpenApiCredentials> {
+  if (!creds.refreshToken) {
+    if (credentialsExpired(creds)) {
+      throw new Error('accessToken 已过期且没有 refreshToken，需要重新授权')
+    }
+    return creds
+  }
+
+  const tmp = new CtraderOpenApiClient()
+  try {
+    // 这里刻意不传 accountId：续期只需要应用认证，不需要账户级授权
+    await tmp.connect({
+      clientId: creds.clientId,
+      clientSecret: creds.clientSecret,
+      accessToken: creds.accessToken,
+      environment: creds.environment
+    })
+    const next = await tmp.refreshToken(creds.refreshToken)
+    const saved = await updateTokens(next.accessToken, next.refreshToken, next.expiresIn)
+    if (!saved) throw new Error('凭据写入失败')
+    cachedCreds = { value: saved, at: Date.now() }
+    return saved
+  } catch (e) {
+    if (!credentialsExpired(creds)) return creds
+    throw new Error(`cTrader 凭据续期失败，需要重新授权：${(e as Error).message}`)
+  } finally {
+    await tmp.close().catch(() => undefined)
+  }
+}
+
+/**
+ * 取一个已认证的 Open API 连接，没有可用凭据时返回 null。
+ *
+ * 凭据指纹里带上 accessToken 尾号：用户重新授权后 tail 会变，
+ * 自动重建连接，不会拿旧 token 的 socket 继续用。
+ */
+async function openApiBackend(): Promise<{
+  client: CtraderOpenApiClient
+  creds: StoredOpenApiCredentials
+} | null> {
+  let creds = await currentCredentials()
+  if (!creds || !creds.accountId) return null
+  // 先固定下来：续期会替换 creds 对象，但账户 ID 不会变
+  const accountId = creds.accountId
+
+  // 到期前 7 天自动续期，留足重试窗口
+  if (creds.expiresAt !== null && creds.expiresAt - Date.now() < REFRESH_AHEAD_MS) {
+    creds = await refreshCredentials(creds)
+  }
+
+  const key = `${creds.environment}:${creds.clientId}:${accountId}:${creds.accessToken.slice(-6)}`
+  if (openApiClient && openApiKey === key && openApiClient.connected) {
+    return { client: openApiClient, creds }
+  }
+
+  await openApiClient?.close().catch(() => undefined)
+  openApiClient = null
+  openApiKey = ''
+
+  const client = new CtraderOpenApiClient()
+  await client.connect({
+    clientId: creds.clientId,
+    clientSecret: creds.clientSecret,
+    accessToken: creds.accessToken,
+    accountId,
+    environment: creds.environment
+  })
+  openApiClient = client
+  openApiKey = key
+  return { client, creds }
+}
+
+/** 退出/切换凭据时释放 Open API 长连接 */
+export async function closeOpenApiBackend(): Promise<void> {
+  const client = openApiClient
+  openApiClient = null
+  openApiKey = ''
+  if (client) await client.close().catch(() => undefined)
+}
+
 const ctraderAdapter: CandleAdapter = {
   id: 'ctrader',
   pageSize: 1000,
@@ -225,9 +392,51 @@ const ctraderAdapter: CandleAdapter = {
 
   page: async (symbol, cursor, fromMs, _toMs, timeframe, _proxy, signal) => {
     if (signal?.aborted) throw new Error('aborted')
-    const client = sharedCtraderClient()
     // cursor 在这里表示「本窗口的时间上界」
-    return client.getTrendbarsPage(symbol, timeframe, fromMs, cursor, 1000)
+
+    // 1) 有 Open API 凭据就优先走它 —— 不需要 cTrader 桌面端在跑。
+    //    连不上时把错误留一份，好在两个后端都失败时一起报出来。
+    let openApiError: Error | null = null
+    try {
+      const backend = await openApiBackend()
+      if (backend) {
+        const { client, creds } = backend
+        const accountId = creds.accountId as number
+        const symbolId = await resolveSymbolId(client, accountId, symbol)
+        const { bars, hasMore } = await client.getTrendbars(
+          accountId,
+          symbolId,
+          timeframe,
+          fromMs,
+          cursor
+        )
+        const tfSec = TIMEFRAME_SECONDS[timeframe] || 60
+        let nextCursor: number | null = null
+        if (hasMore && bars.length > 0) {
+          // 往回退一个周期，避免下一窗口和本窗口在边界上重复
+          const candidate = bars[0].time * 1000 - tfSec * 1000
+          nextCursor = candidate > fromMs ? candidate : null
+        }
+        return { bars, nextCursor }
+      }
+    } catch (e) {
+      openApiError = e as Error
+    }
+
+    // 2) 回退本地 MCP（版本 229 之前的老路径，保持可用）
+    try {
+      const client = sharedCtraderClient()
+      return await client.getTrendbarsPage(symbol, timeframe, fromMs, cursor, 1000)
+    } catch (e) {
+      const mcpError = e as Error
+      if (openApiError) {
+        throw new Error(
+          `cTrader Open API 连接失败：${openApiError.message}；` +
+            `本地 MCP 也不可用：${mcpError.message}`
+        )
+      }
+      throw mcpError
+    }
   }
 }
 

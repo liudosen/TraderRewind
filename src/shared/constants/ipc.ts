@@ -163,6 +163,8 @@ export const IPC = {
 
   // ----- 数据下载 -----
   DATA_LIST_CATALOG: 'data:listCatalog',
+  /** cTrader 本地 MCP 探活（状态灯用），只做 TCP 连接，不占用 MCP 会话 */
+  DATA_MCP_STATUS: 'data:mcpStatus',
   DATA_DOWNLOAD: 'data:download',
   DATA_CANCEL: 'data:cancel',
   DATA_PROGRESS: 'data:progress',
@@ -171,6 +173,10 @@ export const IPC = {
   DATA_FETCH_ROLLOVERS: 'data:fetchRollovers',
   DATA_LIST_DATASETS: 'data:listDatasets',
   DATA_DELETE_DATASET: 'data:deleteDataset',
+  /** 把数据集导出成一个独立的 .db 文件 */
+  DATA_EXPORT_DB: 'data:exportDb',
+  /** 从 .db 文件导入数据集，合并进本地行情库 */
+  DATA_IMPORT_DB: 'data:importDb',
 
   // ----- 应用设置（数据目录等） -----
   SETTINGS_GET: 'settings:get',
@@ -204,6 +210,21 @@ export const IPC = {
   UPDATE_INSTALL: 'update:install',
   /** 打不开自动更新时的兜底：直接跳到 GitHub 发布页 */
   UPDATE_OPEN_RELEASE_PAGE: 'update:openReleasePage',
+
+  // ----- cTrader Open API 凭据 -----
+  /** 读取凭据安全摘要（不含 secret / token 原文） */
+  CTRADER_CRED_GET: 'ctrader:credGet',
+  /** 保存 clientId / clientSecret 等初始配置 */
+  CTRADER_CRED_SAVE: 'ctrader:credSave',
+  CTRADER_CRED_CLEAR: 'ctrader:credClear',
+  /** 手动触发续期（走 5036 协议消息，不依赖被阻断的 443） */
+  CTRADER_CRED_REFRESH: 'ctrader:credRefresh',
+  /** 生成浏览器授权 URL */
+  CTRADER_CRED_AUTH_URL: 'ctrader:credAuthUrl',
+  /** 用授权码换 token：先尝试程序直连，失败则返回需手动打开的 URL */
+  CTRADER_CRED_EXCHANGE: 'ctrader:credExchange',
+  /** 接收用户从浏览器复制回来的 token JSON */
+  CTRADER_CRED_ACCEPT: 'ctrader:credAccept',
 
   // ----- 数据库: 存储 -----
   DB_PERSISTENCE_RELEASE: 'db:persistenceRead:release'
