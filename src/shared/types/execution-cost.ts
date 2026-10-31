@@ -12,7 +12,7 @@
 //   最终盈亏 = 价差盈亏 − 开仓佣金 − 平仓佣金（平仓时一次性结算进这笔订单）
 // ============================================================
 
-import { notionalUsd } from '../utils/pnl'
+import { calcPnl, notionalUsd, quoteUsdRate } from '../utils/pnl'
 
 /** 手续费计费方式 */
 export type CommissionMode = 'perLot' | 'percent'
@@ -130,6 +130,90 @@ export function commissionPerSide(
 /** 有没有启用成本（两个都为 0 = 没启用） */
 export function hasExecutionCost(cost: ExecutionCost): boolean {
   return cost.commissionRate > 0 || cost.slippagePoints > 0
+}
+
+/** 结算一笔持仓要用到的全部静态信息（Position 结构上都有） */
+export interface SettlePosition {
+  symbol: string
+  side: 'buy' | 'sell'
+  /** 手上还剩的手数 */
+  lot: number
+  contractSize: number
+  entryPrice: number
+  digits: number
+  /** 开仓时收的那笔佣金（还没从余额里扣，平仓时一起结） */
+  entryCommission?: number | null
+}
+
+/** 结算的明细：钱是怎么一步步变少的，界面要拆开展示时直接用 */
+export interface CloseBreakdown {
+  /** 实际成交价（含滑点、已按报价精度取整） */
+  exitPrice: number
+  /** 价差盈亏（美元，不含任何佣金） */
+  gross: number
+  /** 开仓那侧摊进这次结算的佣金（减仓按手数比例） */
+  entryCommission: number
+  /** 平仓这侧的佣金 */
+  exitCommission: number
+  /** 两边佣金合计 */
+  commission: number
+  /** 真正落袋：gross − 两边佣金 */
+  net: number
+  /** 平仓时用的「报价货币 → 美元」汇率 */
+  exitRate: number
+}
+
+/**
+ * 平掉 `cutLot` 手会怎么样 —— 全库唯一的结算口径。
+ *
+ * `settlePosition`（真平仓）、持仓行的浮动盈亏、图表 SL/TP 线上的金额标签、
+ * 减仓面板的预览，全都从这里出数。以前这套算术抄了三份，其中持仓行那份
+ * **漏掉了佣金和滑点**，于是同一笔单子在图表上显示「打到止损 -96.59」、
+ * 在持仓行显示「-95.89」—— 差的正好是双边成本，止损拉得越紧，差价占的比例越大，
+ * 看起来就像「同样仓位有时亏得多有时亏得少」。
+ *
+ * @param cutLot 这次要结算掉的手数（全平传 pos.lot，减仓传差额）
+ * @param rawExitPrice 触发价（止损价 / 止盈价 / 当前收盘价），**不含**滑点
+ * @param slippage 平仓端吃不吃滑点：市价单和止损单吃，止盈是限价成交不吃
+ */
+export function closeBreakdown(args: {
+  pos: SettlePosition
+  cutLot: number
+  rawExitPrice: number
+  cost: ExecutionCost
+  /** 交叉盘的「报价货币 → 美元」外部汇率 */
+  quoteToUsd?: number | null
+  slippage: boolean
+}): CloseBreakdown {
+  const { pos, cutLot, rawExitPrice, cost, quoteToUsd, slippage } = args
+
+  const slip = slippage ? slippagePrice(cost, pos.digits) : 0
+  // 滑点永远往不利方向让：多头成交价更低、空头更高
+  const raw = pos.side === 'buy' ? rawExitPrice - slip : rawExitPrice + slip
+  const exitPrice = Number(raw.toFixed(pos.digits))
+
+  const exitRate = quoteUsdRate(pos.symbol, exitPrice, { quoteToUsd }).rate
+  const exitCommission = commissionPerSide(cost, cutLot, pos.contractSize, exitPrice, exitRate)
+
+  // 开仓佣金是按整笔手数一次性收的，这次只带走它该摊的那一份
+  const cutRatio = pos.lot > 0 ? cutLot / pos.lot : 1
+  const entryCommission = (pos.entryCommission ?? 0) * cutRatio
+
+  const gross = calcPnl(
+    { symbol: pos.symbol, side: pos.side, lot: cutLot, contractSize: pos.contractSize, entryPrice: pos.entryPrice },
+    exitPrice,
+    { quoteToUsd }
+  )
+
+  return {
+    exitPrice,
+    gross,
+    entryCommission,
+    exitCommission,
+    commission: entryCommission + exitCommission,
+    net: gross - entryCommission - exitCommission,
+    exitRate
+  }
 }
 
 /** 一行字概括当前成本模型，给下单条上的卡片用 */

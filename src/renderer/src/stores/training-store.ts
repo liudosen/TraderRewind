@@ -47,6 +47,7 @@ import {
 } from '@shared/types/trade-window'
 import {
   DEFAULT_EXECUTION_COST,
+  closeBreakdown,
   commissionPerSide,
   normalizeExecutionCost,
   slippagePrice,
@@ -726,28 +727,23 @@ function settlePosition(
    * 平仓端也要吃成本：
    *  · 止盈是限价单，成交价就应当是设定的那个价，不给滑点
    *  · 市价平仓（含减仓）、止损触发都要按不利方向再让一点
+   *
+   * 算术统一交给 closeBreakdown —— 持仓行的浮动盈亏、图表线上的金额标签、
+   * 减仓预览走的都是同一个函数，四处显示的数才对得上。
    */
-  const slip = reason === 'tp' ? 0 : slippagePrice(executionCost, position.digits)
-  const fill = position.side === 'buy' ? rawExit - slip : rawExit + slip
-  const exitPrice = Number(fill.toFixed(position.digits))
-
   const quoteToUsd = crossRateAt(crossRate, exitTime)
-  const exitRate = quoteUsdRate(position.symbol, exitPrice, { quoteToUsd }).rate
-  const exitCommission = commissionPerSide(
-    executionCost,
-    cut,
-    position.contractSize,
-    exitPrice,
-    exitRate
-  )
+  const bd = closeBreakdown({
+    pos: position,
+    cutLot: cut,
+    rawExitPrice: rawExit,
+    cost: executionCost,
+    quoteToUsd,
+    slippage: reason !== 'tp'
+  })
+  const { exitPrice, exitRate, exitCommission, entryCommission, net: pnl } = bd
 
   const wholeEntryCommission = position.entryCommission ?? 0
   const cutRatio = position.lot > 0 ? cut / position.lot : 1
-  const entryCommission = wholeEntryCommission * cutRatio
-
-  // 价差盈亏（只按切掉的这点头寸）− 分摊的开仓佣金 − 本端佣金 = 这批真正落袋的钱
-  const gross = calcPnl({ ...position, lot: cut }, exitPrice, { quoteToUsd })
-  const pnl = gross - entryCommission - exitCommission
 
   const trade: ClosedTrade = {
     id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,

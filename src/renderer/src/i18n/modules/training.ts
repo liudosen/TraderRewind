@@ -101,7 +101,7 @@ export const zh = {
   'training.closeAllHint': '一次性平掉全部 {n} 笔持仓（也可以快速连按两次 C）',
   'training.closeAll': '全平',
   'training.positionRowHint':
-    '{side} {lot} 手 · 入场 {entry} · 止损 {sl} · 止盈 {tp}\n浮动 {pnl}（点一下选中它，在图上拖它的止损/止盈）',
+    '{side} {lot} 手 · 入场 {entry} · 止损 {sl} · 止盈 {tp}\n浮动 {pnl}（价差 {gross} 已含滑点，另扣手续费 {cost}）= 现在平仓到手的钱\n点一下选中它，在图上拖它的止损/止盈',
   'training.long': '多',
   'training.short': '空',
   'training.closeThisOne': '只平掉这一笔',
@@ -309,7 +309,7 @@ export const en: Record<keyof typeof zh, string> = {
   'training.closeAllHint': 'Close all {n} positions at once (or press C twice quickly)',
   'training.closeAll': 'Close all',
   'training.positionRowHint':
-    '{side} {lot} lots · entry {entry} · stop {sl} · target {tp}\nFloating {pnl} (click to select, then drag its stop / target on the chart)',
+    '{side} {lot} lots · entry {entry} · stop {sl} · target {tp}\nFloating {pnl} (price {gross} incl. slippage, minus {cost} commission) = what closing now pays\nClick to select, then drag its stop / target on the chart',
   'training.long': 'Long',
   'training.short': 'Short',
   'training.closeThisOne': 'Close just this one',

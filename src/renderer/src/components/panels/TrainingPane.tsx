@@ -34,7 +34,6 @@ import clsx from 'clsx'
 import { useHotkeys } from 'react-hotkeys-hook'
 import {
   useTrainingStore,
-  calcPnl,
   quoteUsdRate,
   crossRateAt,
   activeTradeWindow,
@@ -62,7 +61,7 @@ import { formatNumber, formatPrice, formatSigned } from '../../utils/format'
 import { ExecutionCostCard } from '../common/ExecutionCostCard'
 import { getContractSize } from '@shared/constants/catalog'
 import { describeContract, pointValuePerLot, rateSourceLabel } from '@shared/utils/pnl'
-import { commissionPerSide, slippagePrice } from '@shared/types/execution-cost'
+import { closeBreakdown } from '@shared/types/execution-cost'
 import { useTimezoneStore } from '../../stores/timezone-store'
 import { useT, translateLabel, type MessageKey } from '../../i18n'
 import { tzPartsFromSec } from '@shared/types/timezone'
@@ -795,37 +794,32 @@ export function TrainingPane(): React.JSX.Element {
    */
   const crossRate = useTrainingStore((s) => s.crossRate)
 
-  /**
-   * 「当下这一帧」的报价货币→美元汇率。多笔持仓共用同一次查表，
-   * 避免每笔都二分一遍（列表里还会逐行调用 pnlOf）。
-   */
+  /** 「当下这一帧」的报价货币→美元汇率。多笔持仓共用同一次查表，避免每笔都二分一遍。 */
   const quoteToUsdNow = useMemo(
     () => crossRateAt(crossRate, currentTime),
     [crossRate, currentTime]
   )
 
-  /** 单笔持仓按当前价折算的浮动盈亏（美元） */
-  const pnlOf = useCallback(
-    (p: Position): number => (currentBar ? calcPnl(p, currentBar.close, { quoteToUsd: quoteToUsdNow }) : 0),
-    [currentBar, quoteToUsdNow]
-  )
-
   /**
-   * 按「某个出场价 + 某个手数」算这笔单子净落袋多少（美元）。
+   * 「现在就把这 N 手平掉，净落袋多少」—— 全页唯一的平仓估价入口。
    *
-   * 口径必须和 store 里的 settlePosition 一模一样，否则面板上预览 +8.40、真减出来 +6.10：
-   *  · 开仓佣金是按整笔手数收的，结算 lot 手就只带走 lot / 总手数 那部分；
-   *  · 平仓那侧佣金按这次结算的名义价值现算；
+   * 算术和 store 里的 settlePosition 共用 `closeBreakdown`，
+   * 所以面板上预览的数、真平仓出来的数、图表 SL/TP 线上的金额永远一致：
+   *  · 平仓端吃不吃滑点由 slippage 决定（止损/市价吃，止盈是限价成交不吃）；
+   *  · 开仓佣金按整笔手数收的，结算 N 手只带走 N / 总手数 那部分；
+   *  · 平仓那侧佣金按本次成交价的名义价值现算；
    *  · 交叉盘再按出场价把报价货币盈亏折成美元。
    */
-  const netPnlAt = useCallback(
-    (p: Position, lotSize: number, fill: number): number => {
-      const rate = quoteUsdRate(p.symbol, fill, { quoteToUsd: quoteToUsdNow }).rate
-      const gross = calcPnl({ ...p, lot: lotSize }, fill, { quoteToUsd: quoteToUsdNow })
-      const exitCommission = commissionPerSide(executionCost, lotSize, p.contractSize, fill, rate)
-      const entryCommission = (p.entryCommission ?? 0) * (p.lot > 0 ? lotSize / p.lot : 1)
-      return gross - entryCommission - exitCommission
-    },
+  const closeAt = useCallback(
+    (p: Position, lotSize: number, rawPrice: number, slippage: boolean) =>
+      closeBreakdown({
+        pos: p,
+        cutLot: lotSize,
+        rawExitPrice: rawPrice,
+        cost: executionCost,
+        quoteToUsd: quoteToUsdNow,
+        slippage
+      }),
     [executionCost, quoteToUsdNow]
   )
 
@@ -838,26 +832,16 @@ export function TrainingPane(): React.JSX.Element {
   /**
    * 「打到这条止盈/止损线，这笔单子到底赚多少 / 亏多少」—— 图表价格线轴标签上那串金额。
    *
-   * 必须和真正成交时走同一套算法，否则线上写 +30、平出来 +28，用户会以为算错了：
-   *  · 止盈是限价单 → 成交价就是设定价，不吃滑点；
-   *  · 止损是被打穿的市价单 → 按当前滑点再让一点（和 closePosition 里一致）；
-   *  · 开仓佣金在下单时就已经扣了，记在 entryCommission 里，这里减第二次；
-   *  · 平仓那一侧的佣金按目标价的名义价值现算；
-   *  · 交叉盘还要把报价货币盈亏折成美元。
-   *
-   * 手数直接来自持仓本身，所以减仓之后线上的金额会自动跟着变小。
+   * 必须和真正成交时走同一套算法，否则线上写 +30、平出来 +28，用户会以为算错了。
+   * 现在直接调 closeAt，连滑点和两边佣金都和结算一致，不用再各写一遍。
    */
   const riskPnlLabel = useCallback(
     (p: Position, kind: 'sl' | 'tp'): string => {
       const target = kind === 'sl' ? p.sl : p.tp
       if (target == null || !Number.isFinite(target)) return ''
-
-      const slip = kind === 'sl' ? slippagePrice(executionCost, p.digits) : 0
-      const raw = kind === 'sl' ? (p.side === 'buy' ? target - slip : target + slip) : target
-      const fill = Number(raw.toFixed(p.digits))
-      return money(netPnlAt(p, p.lot, fill))
+      return money(closeAt(p, p.lot, target, kind === 'sl').net)
     },
-    [executionCost, netPnlAt, money]
+    [closeAt, money]
   )
 
   /**
@@ -869,23 +853,28 @@ export function TrainingPane(): React.JSX.Element {
   const lotPnlLabel = useCallback(
     (p: Position, lotSize: number): string => {
       if (!currentBar) return ''
-      const slip = slippagePrice(executionCost, p.digits)
-      const raw = p.side === 'buy' ? currentBar.close - slip : currentBar.close + slip
-      return money(netPnlAt(p, lotSize, Number(raw.toFixed(p.digits))))
+      return money(closeAt(p, lotSize, currentBar.close, true).net)
     },
-    [currentBar, executionCost, netPnlAt, money]
+    [currentBar, closeAt, money]
   )
 
   /**
-   * 浮动盈亏 = 所有持仓各自的浮动盈亏之和。
+   * 浮动盈亏 = 所有持仓各自的净浮动之和。
    *
    * 多持仓 / 双向对冲时不能只看一笔：一边多一边空的时候，
    * 两条腿的盈亏会互相抵掉，只有加起来才是账户真实的浮动。每笔都按当下汇率折美元。
+   *
+   * 每笔都是**净额**（扣掉开仓佣金 + 平仓佣金 + 平仓滑点），所以「权益 = 余额 + 浮动」
+   * 就等于「现在全部平掉之后账上有多少钱」，和真平完的结果一分不差。
+   * 以前这里只算价差，于是同一笔单子在图上 SL 标签写 -96.59、持仓行写 -95.89，
+   * 差的 0.90 正好是 0.1 手黄金的双边成本；止损拉得越紧，这点固定成本占的比例越大
+   * （1 美元止损要多付 9%，20 美元止损只多付 0.5%），
+   * 看起来就像「同样手数有时亏得多、有时亏得少」。
    */
   const floatingPnl = useMemo(() => {
     if (positions.length === 0 || !currentBar) return 0
-    return positions.reduce((sum, p) => sum + calcPnl(p, currentBar.close, { quoteToUsd: quoteToUsdNow }), 0)
-  }, [positions, currentBar, quoteToUsdNow])
+    return positions.reduce((sum, p) => sum + closeAt(p, p.lot, currentBar.close, true).net, 0)
+  }, [positions, currentBar, closeAt])
 
   /** 多空两头各自的手数，持仓卡上给个一眼可读的净敞口 */
   const exposure = useMemo(() => {
@@ -2112,7 +2101,9 @@ export function TrainingPane(): React.JSX.Element {
                     <div ref={posListRef} className="max-h-[60px] overflow-y-auto pr-0.5">
                       {positions.map((p) => {
                         const isActive = p.id === activePosition?.id
-                        const pnl = pnlOf(p)
+                        // 一次算出「现在全平」的明细：净额给行内，价差和成本给 tooltip
+                        const bd = currentBar ? closeAt(p, p.lot, currentBar.close, true) : null
+                        const pnl = bd ? bd.net : 0
                         return (
                           <div
                             key={p.id}
@@ -2124,7 +2115,9 @@ export function TrainingPane(): React.JSX.Element {
                               entry: formatPrice(p.entryPrice, p.digits),
                               sl: formatPrice(p.sl, p.digits),
                               tp: formatPrice(p.tp, p.digits),
-                              pnl: formatSigned(pnl)
+                              pnl: formatSigned(pnl),
+                              gross: bd ? formatSigned(bd.gross) : '--',
+                              cost: bd ? `$${bd.commission.toFixed(2)}` : '--'
                             })}
                             className={clsx(
                               'group flex h-5 cursor-pointer items-center gap-1.5 rounded px-1 text-[10.5px] transition-colors',
