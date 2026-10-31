@@ -38,7 +38,8 @@
     "package": "electron-vite build && electron-builder",
     "package:win": "electron-vite build && electron-builder --win",
     "package:mac": "electron-vite build && electron-builder --mac",
-    "release:gh": "node scripts/release-gh.mjs"
+    "release:gh": "node scripts/release-gh.mjs",
+    "release:gitee": "node scripts/release-gitee.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
