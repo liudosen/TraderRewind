@@ -37,17 +37,23 @@
 
 ## 下载与安装
 
-到 [Releases](https://github.com/liudosen/TraderRewind/releases) 下载对应文件，不需要装 Node、不需要配环境。
+到 [GitHub Releases](https://github.com/liudosen/TraderRewind/releases) 或
+[码云 Releases](https://gitee.com/liudosen/TraderRewind/releases) 下载对应文件，
+不需要装 Node、不需要配环境。
 
 | 文件 | 适用场景 | 怎么用 |
 | --- | --- | --- |
 | `TraderRewind-<版本>-setup.exe` | 想正常装到电脑上 | 双击安装，可自选安装目录；装完从开始菜单启动 |
-| `TraderRewind-<版本>-portable.zip` | 不想装、想放 U 盘带走 | 解压到任意目录，双击里面的 `TraderRewind.exe` |
+| `TraderRewind-<版本>-x64.zip` | 不想装、想放 U 盘带走 | 解压到任意目录，双击里面的 `TraderRewind.exe` |
 
 **系统要求**：Windows 10 / 11（64 位）。macOS 与 Linux 需要从源码构建，见[开发与构建](#开发与构建)。
 
 安装包未做代码签名，首次运行时 Windows SmartScreen 可能提示「已保护你的电脑」，
 点「更多信息 → 仍要运行」即可。
+
+**应用内更新会自动选快的线路**：同时查 GitHub 与码云两边的发布信息，各测一段速度，
+哪边快从哪边下；某条线中途断了会自动换另一条。设置页会显示这次走的是哪条线、
+两边各多快。国内直连 GitHub 常常只有几十 KB/s，这条路径基本都会落到码云上。
 
 ## 它解决什么问题
 

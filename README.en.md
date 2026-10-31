@@ -37,18 +37,24 @@ Runs entirely offline. No account, no connection to any broker. All data stays o
 
 ## Download and install
 
-Grab the file you need from [Releases](https://github.com/liudosen/TraderRewind/releases).
+Grab the file you need from [GitHub Releases](https://github.com/liudosen/TraderRewind/releases)
+or [Gitee Releases](https://gitee.com/liudosen/TraderRewind/releases).
 No Node, no toolchain, nothing to configure.
 
 | File | Who it's for | How to use |
 | --- | --- | --- |
 | `TraderRewind-<version>-setup.exe` | You want it properly installed | Run the installer, pick a directory if you like, then launch from the Start menu |
-| `TraderRewind-<version>-portable.zip` | You don't want to install anything | Unzip anywhere and run the `TraderRewind.exe` inside |
+| `TraderRewind-<version>-x64.zip` | You don't want to install anything | Unzip anywhere and run the `TraderRewind.exe` inside |
 
 **Requirements**: Windows 10 / 11 (64-bit). macOS and Linux need a build from source — see [Build and run](#build-and-run).
 
 The binaries are not code-signed, so Windows SmartScreen may show "Windows protected your PC"
 on first launch. Click **More info → Run anyway**.
+
+**In-app updates pick the faster route automatically**: both the GitHub and Gitee releases are
+queried, a small sample is downloaded from each candidate installer to measure throughput, and the
+winner gets the real download. If one route dies mid-transfer the other takes over. Settings shows
+which route was used and how fast each one was.
 
 ## The problem it solves
 

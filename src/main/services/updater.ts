@@ -1,15 +1,24 @@
 // ============================================================
-// TraderRewind — 版本更新（GitHub Release）
+// TraderRewind — 版本更新（GitHub + 码云双通道）
 //
-// 流程：查 `releases/latest` → 比版本号 → 找 `*-setup.exe` 资产
+// 流程：同时查两边的 `releases/latest` → 取版本较新的那份
+//      → 对两边的 setup.exe 各抓一小段实测速度 → 谁快从谁那儿下
 //      → 下载到 userData/updates → 交给 NSIS 静默安装 → 退出应用
+//
+// 为什么要两个通道：本项目用户以国内为主，GitHub 直连经常只有几十 KB/s
+// 甚至超时，而码云在国内通常能跑满带宽。两个都查、都测，比「写死一个
+// 更快的源」靠谱 —— 网络状况因地区/运营商而异，写死的判断迟早会错。
 //
 // 几个刻意的取舍：
 //  · 走项目自己的 HTTP 层（带代理 / 跳转跟随 / 重试），不引 electron-updater：
-//    本项目是国内用户为主，代理是刚需，而 electron-updater 的代理与我们的
-//    配置体系不通用；release 资产也是手工上传的，没有 latest.yml 可供它用。
+//    代理是刚需，而 electron-updater 的代理与我们的配置体系不通用；
+//    release 资产也是手工上传的，没有 latest.yml 可供它用。
+//  · 测速只抓 768 KB 就掐断，代价小到用户感知不到；即使服务端不认 Range
+//    也照样掐断，不会把 84 MB 的包拖下来两遍。
 //  · 主进程持有唯一的更新状态，界面只是订阅者（UPDATE_STATUS 广播），
 //    这样「下载中」不会因为切页面、重渲染而丢。
+//  · 选中的通道会记进 meta，下次测速失败时优先用它 —— 别让偶发抖动
+//    把用户重新扔回慢的那条线。
 //  · 下载完只到「可以安装」，不自动重启安装：用户手上可能在打单，
 //    未经同意直接退出应用是不可接受的。
 // ============================================================
@@ -23,12 +32,50 @@ import { compareVersions } from '@shared/utils/version'
 import { getTrainingDb } from '../db/connection'
 import { describeProxyProblem, fetchBuffer, FetchError } from '../utils/http'
 
-/** 仓库地址：更新检查、下载、打不开时的跳转都用它 */
-const REPO = 'liudosen/TraderRewind'
-const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`
-const RELEASE_PAGE = `https://github.com/${REPO}/releases/latest`
+/** 仓库坐标：GitHub 与码云同名同 owner，改一处两边都跟着变 */
+const REPO_OWNER = 'liudosen'
+const REPO_NAME = 'TraderRewind'
+const GITHUB_REPO = `https://github.com/${REPO_OWNER}/${REPO_NAME}`
+const GITEE_REPO = `https://gitee.com/${REPO_OWNER}/${REPO_NAME}`
+
 /** 代理和下载面板共用同一个键，用户配一次两边都认 */
 const PROXY_META_KEY = 'download.proxy.v2'
+/** 上次选中的更新通道，测速失败时用它兜底 */
+const CHANNEL_META_KEY = 'update.channel.v1'
+
+export type UpdateChannelId = 'github' | 'gitee'
+
+interface UpdateChannel {
+  id: UpdateChannelId
+  /** 界面与日志里显示的名字 */
+  label: string
+  releaseApi: string
+  /** 发布页：自动更新失败时跳这里 */
+  releasePage: string
+  /** 资产直链前缀：release JSON 没给下载地址时用它拼 */
+  downloadBase: string
+}
+
+const CHANNELS: UpdateChannel[] = [
+  {
+    id: 'github',
+    label: 'GitHub',
+    releaseApi: `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
+    releasePage: `${GITHUB_REPO}/releases/latest`,
+    downloadBase: `${GITHUB_REPO}/releases/download`
+  },
+  {
+    id: 'gitee',
+    label: '码云',
+    releaseApi: `https://gitee.com/api/v5/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
+    releasePage: `${GITEE_REPO}/releases`,
+    downloadBase: `${GITEE_REPO}/releases/download`
+  }
+]
+
+function channelById(id: UpdateChannelId | null): UpdateChannel {
+  return CHANNELS.find((c) => c.id === id) ?? CHANNELS[0]
+}
 
 export type UpdatePhase =
   | 'idle'
@@ -58,6 +105,11 @@ export interface UpdateState {
   checkedAt: number | null
   /** 打包版才允许真的执行安装；开发模式下只用来验证流程 */
   installable: boolean
+  /** 这次走的是哪条线 */
+  channel: UpdateChannelId | null
+  channelLabel: string | null
+  /** 两条线的实测结果，如「码云 8.4 MB/s · GitHub 120 KB/s」 */
+  channelSummary: string | null
 }
 
 const state: UpdateState = {
@@ -66,7 +118,7 @@ const state: UpdateState = {
   latestVersion: null,
   notes: null,
   publishedAt: null,
-  releaseUrl: RELEASE_PAGE,
+  releaseUrl: GITHUB_REPO + '/releases/latest',
   assetName: null,
   assetSize: 0,
   received: 0,
@@ -74,19 +126,30 @@ const state: UpdateState = {
   filePath: null,
   error: null,
   checkedAt: null,
-  installable: app.isPackaged
+  installable: app.isPackaged,
+  channel: null,
+  channelLabel: null,
+  channelSummary: null
 }
 
 let checking = false
 let downloading = false
 /** 安装包下载的中止句柄：切版本 / 重下时用得上 */
 let downloadAbort: AbortController | null = null
+
+/** 一条通道上的候选安装包 */
+interface DownloadCandidate {
+  channel: UpdateChannel
+  name: string
+  size: number
+  url: string
+}
+
 /**
- * 安装包的真实下载地址（release 资产给的，带资产 id）。
- * 不自己拼 `releases/download/<tag>/<name>` —— tag 可能是 `v0.2.4` 也可能是 `0.2.4`，
- * 拼错了就是 404，而资产 URL 永远是对的。
+ * 本次可用的下载候选，按「快的在前」排好。
+ * 第一个失败了自动换下一个 —— 某个源临时抽风时用户不用重新点一次检查更新。
  */
-let assetUrl: string | null = null
+let candidates: DownloadCandidate[] = []
 
 export function getUpdateState(): UpdateState {
   return { ...state }
@@ -118,19 +181,59 @@ function downloadProxy(): string {
   }
 }
 
-interface ReleaseAsset {
+function readMeta(key: string): string {
+  try {
+    const row = getTrainingDb().prepare('SELECT value FROM meta WHERE key = ?').get(key) as
+      | { value?: string }
+      | undefined
+    return String(row?.value ?? '')
+  } catch {
+    return ''
+  }
+}
+
+function writeMeta(key: string, value: string): void {
+  try {
+    getTrainingDb()
+      .prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(key, value)
+  } catch {
+    // 记不住偏好不影响本次更新
+  }
+}
+
+function preferredChannel(): UpdateChannelId | null {
+  const v = readMeta(CHANNEL_META_KEY)
+  return v === 'github' || v === 'gitee' ? v : null
+}
+
+/** 归一化后的发布信息：两家的 JSON 字段名不一样，到这里就一样了 */
+interface ReleaseInfo {
+  channel: UpdateChannel
+  version: string
+  notes: string | null
+  publishedAt: string | null
+  pageUrl: string
+  asset: DownloadCandidate | null
+  /** 查询接口本身的耗时，测速失败时退而用它排序 */
+  apiMs: number
+}
+
+interface RawAsset {
   name?: string
   size?: number
   browser_download_url?: string
+  download_url?: string
 }
 
-interface GitHubRelease {
+interface RawRelease {
   tag_name?: string
   name?: string
   body?: string
   published_at?: string
+  created_at?: string
   html_url?: string
-  assets?: ReleaseAsset[]
+  assets?: RawAsset[] | null
 }
 
 /**
@@ -140,10 +243,189 @@ interface GitHubRelease {
  * 没有就退回任意 `.exe`；再没有就当这次发布没法自动更新
  * （比如只传了 zip —— zip 得用户自己解包，不适合「自动更新」）。
  */
-function pickInstaller(assets: ReleaseAsset[]): ReleaseAsset | null {
-  const exes = assets.filter((a) => /\.exe$/i.test(a.name ?? '') && a.browser_download_url)
-  const setup = exes.find((a) => /setup/i.test(a.name ?? ''))
-  return setup ?? exes[0] ?? null
+function pickInstaller(
+  assets: RawAsset[],
+  channel: UpdateChannel,
+  version: string
+): DownloadCandidate | null {
+  const exes = assets.filter((a) => /\.exe$/i.test(a.name ?? ''))
+  const setup = exes.find((a) => /setup/i.test(a.name ?? '')) ?? exes[0]
+  if (!setup?.name) return null
+  // 资产 URL 永远是对的（tag 可能是 v0.4.0 也可能是 0.4.0，自己拼容易 404）；
+  // 只有缺 URL 时才退回拼接，并同时试带 v 和不带 v 两种 tag
+  const url =
+    setup.browser_download_url ||
+    setup.download_url ||
+    `${channel.downloadBase}/v${version}/${encodeURIComponent(setup.name)}`
+  return {
+    channel,
+    name: setup.name,
+    size: Number(setup.size) || 0,
+    url
+  }
+}
+
+/** 查一个通道的最新发布 */
+async function fetchChannelRelease(ch: UpdateChannel, proxy: string): Promise<ReleaseInfo> {
+  const started = Date.now()
+  const buf = await fetchBuffer(ch.releaseApi, {
+    proxy,
+    timeoutMs: 8000,
+    retries: 0,
+    headers: {
+      Accept: ch.id === 'github' ? 'application/vnd.github+json' : 'application/json',
+      'User-Agent': `TraderRewind/${app.getVersion()}`
+    }
+  })
+  const apiMs = Date.now() - started
+
+  const raw = JSON.parse(buf.toString('utf8')) as RawRelease
+  const version = String(raw.tag_name ?? raw.name ?? '')
+    .trim()
+    .replace(/^v/i, '')
+  if (!version) throw new FetchError(`${ch.label} 的发布信息里没有版本号`)
+
+  const asset = pickInstaller(Array.isArray(raw.assets) ? raw.assets : [], ch, version)
+
+  return {
+    channel: ch,
+    version,
+    notes: raw.body?.trim() || null,
+    publishedAt: raw.published_at ?? raw.created_at ?? null,
+    pageUrl:
+      raw.html_url ||
+      (ch.id === 'github' ? `${GITHUB_REPO}/releases/tag/v${version}` : ch.releasePage),
+    asset,
+    apiMs
+  }
+}
+
+/** 测速只抓这么多就掐断：够判断快慢，又不至于为了测速先下几 MB */
+const PROBE_BYTES = 768 * 1024
+/**
+ * 测速窗口。给 4.5 秒而不是十几秒 —— 慢线本来也跑不出什么速度，
+ * 让它拖满超时只会把「检查更新」拖成一次长等待。
+ */
+const PROBE_WINDOW_MS = 4500
+/** 窗口内至少得收到这么多字节，样本才够算速度；低于这个数视为这条线不可用 */
+const PROBE_MIN_BYTES = 64 * 1024
+
+/**
+ * 抓一小段安装包，实测这条线的速度。
+ *
+ * 用 Range 只取前 768 KB；万一服务端不认 Range（返回 200 整包），
+ * onProgress 里到量就 abort —— 无论如何都不会真的把整包拖下来。
+ * 结果换算成 KB/s，用它排序。
+ */
+export async function probeSpeed(
+  url: string,
+  proxy: string
+): Promise<{ kbps: number; ms: number } | null> {
+  const abort = new AbortController()
+  const started = Date.now()
+  let received = 0
+
+  // 总截止时间必须自己掐：http 层的 timeoutMs 是「每跳一次重定向重新计时」，
+  // GitHub 的资产要先 302 到 release-assets，两跳就变成两倍时长。
+  const deadline = setTimeout(() => abort.abort(), PROBE_WINDOW_MS)
+
+  try {
+    await fetchBuffer(url, {
+      proxy,
+      signal: abort.signal,
+      timeoutMs: PROBE_WINDOW_MS * 2,
+      retries: 0,
+      headers: { Range: `bytes=0-${PROBE_BYTES - 1}` },
+      onProgress: (_delta, got) => {
+        received = got
+        if (got >= PROBE_BYTES) abort.abort()
+      }
+    })
+  } catch {
+    // 超时 / 主动掐断都会走到这里：只要样本够，就照样算速度
+  } finally {
+    clearTimeout(deadline)
+  }
+
+  const ms = Math.max(1, Date.now() - started)
+  if (received < PROBE_MIN_BYTES) return null
+  return { kbps: received / 1024 / (ms / 1000), ms }
+}
+
+function fmtSpeed(kbps: number): string {
+  if (kbps >= 1024) return `${(kbps / 1024).toFixed(1)} MB/s`
+  return `${Math.max(1, Math.round(kbps))} KB/s`
+}
+
+/**
+ * 决定这次从哪儿下。
+ *
+ * 步骤：两边并发查（谁失败都不影响另一边）→ 取版本较新的那份当目标
+ *      → 版本落后的一方直接淘汰（镜像还没同步时就该走另一边）
+ *      → 剩下的各测一段速度，快的排前面。
+ */
+export async function resolveUpdateSource(proxy: string): Promise<{
+  best: ReleaseInfo
+  ranked: ReleaseInfo[]
+  summary: string
+}> {
+  const settled = await Promise.allSettled(CHANNELS.map((ch) => fetchChannelRelease(ch, proxy)))
+  const ok: ReleaseInfo[] = []
+  const failures: string[] = []
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled') ok.push(r.value)
+    else failures.push(`${CHANNELS[i].label}：${(r.reason as Error)?.message ?? '未知错误'}`)
+  })
+
+  if (ok.length === 0) {
+    throw new FetchError(failures.join('；') || '两个更新源都连不上')
+  }
+
+  // 版本较新的那份就是目标：码云有时候比 GitHub 早/晚几分钟，不能只看顺序
+  const target = ok.reduce((a, b) => (compareVersions(b.version, a.version) > 0 ? b : a))
+  const same = ok.filter((r) => compareVersions(r.version, target.version) === 0)
+
+  // 有安装包的才算可用通道；没有的只作信息展示
+  const withAsset = same.filter((r) => r.asset)
+  if (withAsset.length === 0) {
+    return { best: target, ranked: [], summary: '' }
+  }
+
+  let ranked = withAsset
+  const speeds: string[] = []
+
+  if (withAsset.length > 1) {
+    const probes = await Promise.all(
+      withAsset.map((r) => probeSpeed(r.asset!.url, proxy).catch(() => null))
+    )
+    const withSpeed = withAsset.map((r, i) => ({ r, p: probes[i] }))
+    withSpeed.sort((a, b) => {
+      // 有测速结果的优先，按速度降序；都测不出来时按接口耗时升序
+      if (a.p && b.p) return b.p.kbps - a.p.kbps
+      if (a.p) return -1
+      if (b.p) return 1
+      return a.r.apiMs - b.r.apiMs
+    })
+    ranked = withSpeed.map((x) => x.r)
+    for (const { r, p } of withSpeed) {
+      speeds.push(p ? `${r.channel.label} ${fmtSpeed(p.kbps)}` : `${r.channel.label} 测速失败`)
+    }
+  } else {
+    speeds.push(`${ranked[0].channel.label}（唯一可用源）`)
+  }
+
+  // 测速全失败时，用上次记住的通道兜底，别让偶发抖动把用户扔回慢线
+  if (!ranked.length) ranked = withAsset
+  if (speeds.every((s) => s.includes('测速失败'))) {
+    const pref = preferredChannel()
+    if (pref) {
+      ranked = [...ranked].sort(
+        (a, b) => (b.channel.id === pref ? 1 : 0) - (a.channel.id === pref ? 1 : 0)
+      )
+    }
+  }
+
+  return { best: ranked[0], ranked, summary: speeds.join(' · ') }
 }
 
 /**
@@ -157,7 +439,7 @@ export async function checkForUpdate(
 ): Promise<UpdateState> {
   if (checking || downloading) return getUpdateState()
   checking = true
-  update({ phase: 'checking', error: null })
+  update({ phase: 'checking', error: null, channelSummary: null })
 
   const proxy = downloadProxy()
   const proxyProblem = describeProxyProblem(proxy)
@@ -165,45 +447,37 @@ export async function checkForUpdate(
   try {
     if (proxyProblem) throw new FetchError(proxyProblem)
 
-    const buf = await fetchBuffer(RELEASE_API, {
-      proxy,
-      timeoutMs: 15000,
-      retries: 1,
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': `TraderRewind/${app.getVersion()}`
-      }
-    })
+    const { best, ranked, summary } = await resolveUpdateSource(proxy)
+    const latest = best.version
+    const asset = best.asset
 
-    const release = JSON.parse(buf.toString('utf8')) as GitHubRelease
-    const latest = String(release.tag_name ?? '').replace(/^v/i, '')
-    if (!latest) throw new FetchError('发布信息里没有版本号')
-
-    const asset = pickInstaller(release.assets ?? [])
     const base: Partial<UpdateState> = {
       currentVersion: app.getVersion(),
       latestVersion: latest,
-      notes: release.body?.trim() || null,
-      publishedAt: release.published_at ?? null,
-      releaseUrl: release.html_url || RELEASE_PAGE,
+      notes: best.notes,
+      publishedAt: best.publishedAt,
+      releaseUrl: best.pageUrl,
       assetName: asset?.name ?? null,
-      assetSize: Number(asset?.size) || 0,
+      assetSize: asset?.size ?? 0,
       received: 0,
       total: 0,
       filePath: null,
       checkedAt: Date.now(),
       error: null,
-      installable: app.isPackaged
+      installable: app.isPackaged,
+      channel: best.channel.id,
+      channelLabel: best.channel.label,
+      channelSummary: summary || null
     }
 
     if (compareVersions(latest, app.getVersion()) <= 0) {
       checking = false
-      assetUrl = null
+      candidates = []
       return update({ ...base, phase: 'uptodate', latestVersion: latest })
     }
     if (!asset) {
       checking = false
-      assetUrl = null
+      candidates = []
       return update({
         ...base,
         phase: 'error',
@@ -212,12 +486,14 @@ export async function checkForUpdate(
     }
 
     checking = false
-    assetUrl = asset.browser_download_url ?? null
+    // 排好序的候选列表：第一个失败自动换下一个
+    candidates = ranked.map((r) => r.asset!).filter(Boolean)
     const next = update({ ...base, phase: 'available' })
     if (opts.autoDownload) void downloadUpdate()
     return next
   } catch (e: any) {
     checking = false
+    candidates = []
     const msg = friendlyError(e)
     return update({ phase: 'error', error: msg, checkedAt: Date.now(), latestVersion: null })
   }
@@ -232,14 +508,14 @@ export async function checkForUpdate(
 function friendlyError(e: any): string {
   const status = e instanceof FetchError ? e.statusCode : undefined
   const text = e?.message ? String(e.message) : ''
-  if (status === 403) return 'GitHub 接口请求过于频繁（403），过一会儿再试'
+  if (status === 403) return '更新接口请求过于频繁（403），过一会儿再试'
   if (status === 404) return '仓库里还没有任何 Release'
   if (text === 'aborted') return '已取消'
   if (/ECONNREFUSED/.test(text)) return '代理拒绝连接：确认代理软件已启动、端口没填错'
   if (/ENOTFOUND|EAI_AGAIN/.test(text)) {
-    return '连不上 GitHub：检查网络，或在数据下载页填好代理'
+    return '连不上更新服务器：检查网络，或在数据下载页填好代理'
   }
-  if (/ETIMEDOUT|timeout/i.test(text)) return '连接 GitHub 超时：多半需要代理'
+  if (/ETIMEDOUT|timeout|超时/i.test(text)) return '连接更新服务器超时：多半需要代理'
   if (/证书|CERT|self signed/i.test(text)) return '代理证书有问题：换成 HTTP 代理或关掉 SSL 拦截'
   return text || '检查更新失败'
 }
@@ -250,17 +526,35 @@ function updatesDir(): string {
   return dir
 }
 
-/** 下载安装包到 userData/updates，同名文件先删掉，避免残留旧包 */
+/**
+ * 下载安装包到 userData/updates，同名文件先删掉，避免残留旧包。
+ *
+ * 依次尝试候选源：某条线中途断了就立刻换另一条重下，而不是把错误甩给用户；
+ * 只有全部失败才汇报，并把每条线的失败原因都带上，方便判断是网络还是别的。
+ */
 export async function downloadUpdate(): Promise<UpdateState> {
   if (downloading) return getUpdateState()
   if (state.phase !== 'available' && state.phase !== 'error' && state.phase !== 'ready') {
     return getUpdateState()
   }
-  if (!state.assetName) return update({ phase: 'error', error: '没有可下载的安装包' })
+  if (candidates.length === 0) {
+    // 没有候选（比如重启后直接点下载）：退回按已知信息拼一个
+    if (!state.assetName || !state.latestVersion) {
+      return update({ phase: 'error', error: '没有可下载的安装包' })
+    }
+    const ch = channelById(state.channel)
+    candidates = [
+      {
+        channel: ch,
+        name: state.assetName,
+        size: state.assetSize,
+        url: `${ch.downloadBase}/v${state.latestVersion}/${encodeURIComponent(state.assetName)}`
+      }
+    ]
+  }
 
   downloading = true
   const proxy = downloadProxy()
-  const target = join(updatesDir(), state.assetName)
   const abort = new AbortController()
   downloadAbort = abort
   update({ phase: 'downloading', received: 0, total: state.assetSize, error: null })
@@ -274,47 +568,74 @@ export async function downloadUpdate(): Promise<UpdateState> {
     update({ received, total })
   }
 
-  try {
-    const url =
-      assetUrl ??
-      `https://github.com/${REPO}/releases/download/v${state.latestVersion}/${encodeURIComponent(
-        state.assetName
-      )}`
-    const buf = await fetchBuffer(url, {
-      proxy,
-      signal: abort.signal,
-      timeoutMs: 180000,
-      retries: 2,
-      headers: { 'User-Agent': `TraderRewind/${app.getVersion()}` },
-      onProgress: (_delta, received, total) => emitProgress(received, total)
+  const errors: string[] = []
+
+  for (const cand of candidates) {
+    if (abort.signal.aborted) break
+    update({
+      channel: cand.channel.id,
+      channelLabel: cand.channel.label,
+      assetName: cand.name,
+      assetSize: cand.size,
+      received: 0,
+      total: cand.size
     })
 
-    if (existsSync(target)) {
-      try {
-        unlinkSync(target)
-      } catch {
-        // 文件被占用就当写入失败，下面写不进去会报错
+    const target = join(updatesDir(), cand.name)
+    try {
+      console.log(`[update] 从 ${cand.channel.label} 下载 ${cand.name}`)
+      const buf = await fetchBuffer(cand.url, {
+        proxy,
+        signal: abort.signal,
+        timeoutMs: 300000,
+        retries: 1,
+        headers: { 'User-Agent': `TraderRewind/${app.getVersion()}` },
+        onProgress: (_delta, received, total) => emitProgress(received, total)
+      })
+
+      if (existsSync(target)) {
+        try {
+          unlinkSync(target)
+        } catch {
+          // 文件被占用就当写入失败，下面写不进去会报错
+        }
       }
-    }
-    writeFileSync(target, buf)
-    const written = statSync(target).size
-    if (state.assetSize > 0 && written !== state.assetSize) {
-      throw new Error(`安装包大小不符（期望 ${state.assetSize} 字节，实际 ${written} 字节）`)
-    }
+      writeFileSync(target, buf)
+      const written = statSync(target).size
+      if (cand.size > 0 && written !== cand.size) {
+        throw new Error(`安装包大小不符（期望 ${cand.size} 字节，实际 ${written} 字节）`)
+      }
 
-    downloading = false
-    downloadAbort = null
-    return update({
-      phase: 'ready',
-      filePath: target,
-      received: written,
-      total: written
-    })
-  } catch (e: any) {
-    downloading = false
-    downloadAbort = null
-    return update({ phase: 'error', error: friendlyError(e) })
+      // 记住这次成功的通道，下次测速抖动时优先用它
+      writeMeta(CHANNEL_META_KEY, cand.channel.id)
+
+      downloading = false
+      downloadAbort = null
+      return update({
+        phase: 'ready',
+        filePath: target,
+        received: written,
+        total: written
+      })
+    } catch (e: any) {
+      if (abort.signal.aborted) {
+        downloading = false
+        downloadAbort = null
+        return update({ phase: 'error', error: '已取消' })
+      }
+      console.warn(`[update] ${cand.channel.label} 下载失败：`, e?.message ?? e)
+      errors.push(`${cand.channel.label}：${e?.message ?? e}`)
+    }
   }
+
+  downloading = false
+  downloadAbort = null
+  return update({
+    phase: 'error',
+    error: errors.length > 1 ? `两条下载线路都失败了 —— ${errors.join('；')}` : friendlyError(
+      new Error(errors[0] ?? '下载失败')
+    )
+  })
 }
 
 /** 取消正在进行的下载（暂未在界面上暴露，留给以后的「取消」按钮） */
@@ -367,9 +688,9 @@ export async function installUpdate(): Promise<{ ok: boolean; error?: string }> 
   return { ok: true }
 }
 
-/** 打开发布页（自动更新失败时的兜底） */
+/** 打开发布页（自动更新失败时的兜底）：优先打开这次选中的通道 */
 export function openReleasePage(): void {
-  void shell.openExternal(state.releaseUrl)
+  void shell.openExternal(state.releaseUrl || channelById(state.channel).releasePage)
 }
 
 /** 应用启动后延迟检查一次：不阻塞开窗，也给下载任务让路 */

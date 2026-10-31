@@ -16,7 +16,8 @@ import {
   Activity,
   Download,
   ArrowUpRight,
-  RefreshCw
+  RefreshCw,
+  Gauge
 } from 'lucide-react'
 import clsx from 'clsx'
 import { formatBytes } from '../../utils/format'
@@ -933,6 +934,22 @@ function UpdateCard(): React.JSX.Element {
               </span>
             )}
           </div>
+
+          {/* 线路信息：让用户看见「为什么这次这么快/这么慢」，而不是只感觉到快慢 */}
+          {state.channelSummary &&
+            (state.phase === 'available' ||
+              state.phase === 'downloading' ||
+              state.phase === 'ready') && (
+              <div className="mt-1 flex items-start gap-1 text-[10px] text-[var(--text-faint)]">
+                <Gauge size={10} className="mt-[2px] shrink-0" />
+                <span className="break-all">
+                  {t('settings.update.channel', {
+                    channel: state.channelLabel ?? '',
+                    speeds: state.channelSummary
+                  })}
+                </span>
+              </div>
+            )}
 
           {/* 进度条：只在下载中出现，避免静态时多一条线 */}
           {state.phase === 'downloading' && (

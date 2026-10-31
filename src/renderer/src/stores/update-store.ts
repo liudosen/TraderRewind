@@ -33,6 +33,11 @@ export interface UpdateState {
   error: string | null
   checkedAt: number | null
   installable: boolean
+  /** 这次走的是哪条线（github / gitee） */
+  channel: 'github' | 'gitee' | null
+  channelLabel: string | null
+  /** 两条线的实测速度摘要，如「码云 8.4 MB/s · GitHub 120 KB/s」 */
+  channelSummary: string | null
 }
 
 const EMPTY: UpdateState = {
@@ -49,7 +54,10 @@ const EMPTY: UpdateState = {
   filePath: null,
   error: null,
   checkedAt: null,
-  installable: false
+  installable: false,
+  channel: null,
+  channelLabel: null,
+  channelSummary: null
 }
 
 interface UpdateStore extends UpdateState {
