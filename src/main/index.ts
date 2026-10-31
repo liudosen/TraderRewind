@@ -12,7 +12,7 @@ import { registerDataHandlers } from './ipc/data-handlers'
 import { registerSettingsHandlers } from './ipc/settings-handlers'
 import { registerUpdateHandlers } from './ipc/update-handlers'
 import { registerCtraderCredentialHandlers } from './ipc/ctrader-cred-handlers'
-import { scheduleStartupCheck } from './services/updater'
+import { scheduleInstallerCleanup, scheduleStartupCheck } from './services/updater'
 import { initDatabases, closeDatabases } from './db/connection'
 import { sharedCtraderClient } from './services/ctrader-mcp'
 
@@ -160,6 +160,13 @@ if (!gotTheLock) {
      * 真正安装要点一下——用户手上可能在打单，不能直接把他踢下线。
      */
     scheduleStartupCheck()
+
+    /**
+     * 清掉上一次更新留下的安装包。安装程序不会删自己，应用一退出就没人善后，
+     * 几十 MB 会一直躺在 userData/updates 里。放在启动后几秒做，并带重试：
+     * 刚被安装程序拉起的那一会儿，文件句柄可能还没释放。
+     */
+    scheduleInstallerCleanup()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

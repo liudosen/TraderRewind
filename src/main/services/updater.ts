@@ -25,7 +25,7 @@
 
 import { app, BrowserWindow, shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { IPC } from '@shared/constants/ipc'
 import { compareVersions } from '@shared/utils/version'
@@ -532,6 +532,54 @@ function updatesDir(): string {
   return dir
 }
 
+/** 目录里还躺着的安装包（下载完 → 安装完 → 就再没人管了，几十 MB 一直占着） */
+function pendingInstallers(): string[] {
+  try {
+    return readdirSync(updatesDir())
+      .filter((n) => /\.(exe|blockmap)$/i.test(n))
+      .map((n) => join(updatesDir(), n))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 清掉下载目录里残留的安装包。
+ *
+ * 装完就没有用了 —— 安装程序自己不会删自己，应用退出后就没人回来善后。
+ * `keep` 是正在使用的那个文件（下载中/待安装），不能动。
+ * 删不掉的（安装程序进程可能还攥着句柄）直接跳过，下次启动再清。
+ */
+function cleanupInstallers(keep: string | null = null): number {
+  let removed = 0
+  for (const full of pendingInstallers()) {
+    if (keep && full === keep) continue
+    try {
+      unlinkSync(full)
+      removed++
+    } catch {
+      // 被占用：交给下一次启动
+    }
+  }
+  if (removed > 0) console.log(`[update] 清理了 ${removed} 个残留安装包`)
+  return removed
+}
+
+/**
+ * 启动后清一次残留安装包。
+ *
+ * 不能只清一次：安装程序拉起新版后可能还没完全退出，句柄一时半会儿不放，
+ * 此刻删会失败。所以隔几秒重试几轮，直到目录干净或放弃。
+ */
+export function scheduleInstallerCleanup(delayMs = 5000): void {
+  let tries = 0
+  const tick = (): void => {
+    cleanupInstallers()
+    if (pendingInstallers().length > 0 && ++tries < 5) setTimeout(tick, 4000)
+  }
+  setTimeout(tick, delayMs)
+}
+
 /**
  * 下载安装包到 userData/updates，同名文件先删掉，避免残留旧包。
  *
@@ -588,6 +636,8 @@ export async function downloadUpdate(): Promise<UpdateState> {
     })
 
     const target = join(updatesDir(), cand.name)
+    // 换源重试可能留下上一条线的半成品；除了即将写入的这个，其余都清掉
+    cleanupInstallers(target)
     try {
       console.log(`[update] 从 ${cand.channel.label} 下载 ${cand.name}`)
       const buf = await fetchBuffer(cand.url, {
@@ -658,7 +708,7 @@ export function cancelUpdateDownload(): void {
  *
  * `detached: true` 是为了让安装程序活过父进程：它新建进程组、脱离控制台，
  * 我们 unref 之后就彻底不管它了。静默安装（`/S`）沿用上一次的安装目录，
- * 不会重新问路径。
+ * 不会重新问路径；装完由 `--force-run` 把新版拉起来（见下面的参数说明）。
  */
 export async function installUpdate(): Promise<{ ok: boolean; error?: string }> {
   if (!app.isPackaged) {
@@ -679,7 +729,18 @@ export async function installUpdate(): Promise<{ ok: boolean; error?: string }> 
 
   app.once('will-quit', () => {
     try {
-      const child = spawn(file, ['/S'], { detached: true, stdio: 'ignore' })
+      // 这三个参数缺一不可，都是 NSIS 模板（installSection.nsh）里写死的判定：
+      //  · `/S`        静默安装，不弹任何页面
+      //  · `--updated` 标记为「由更新触发」，让安装程序把 `--updated` 传给新进程
+      //  · `--force-run` 装完立刻启动新版本
+      // 本项目是 `oneClick: false`（辅助式安装包），模板里那条分支是：
+      //     ${if} ${isForceRun} ${andIf} ${Silent}  → 才 StartApp
+      // 也就是说静默安装**必须**带 --force-run 才会重启；只给 /S 的话，
+      // 装完悄无声息地结束，用户看到的就是「更新完自己没了」。
+      const child = spawn(file, ['--updated', '/S', '--force-run'], {
+        detached: true,
+        stdio: 'ignore'
+      })
       // spawn 的失败是异步的，try/catch 抓不到，只能听 error 事件
       child.on('error', (e) => console.error('[update] 安装程序启动失败：', e))
       child.unref()
