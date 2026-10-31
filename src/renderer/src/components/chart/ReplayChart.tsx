@@ -46,6 +46,7 @@ import {
 import {
   drawShape,
   drawPreview,
+  estimateTextWidth,
   hitTest,
   polyPoints,
   shapePoints,
@@ -177,6 +178,17 @@ const TP_COLOR = '#22c55e'
 const TRAIL_COLOR = '#f59e0b'
 // 细线更好看，但抓取判定要放宽一点，否则很难「抓住」
 const HIT_TOLERANCE = 10
+
+/**
+ * 给「双击改字」的输入框定宽度。
+ *
+ * 宽度估算和命中盒共用 drawings.ts 里那一套（全角 12px / 空格 4px / 其余 7px），
+ * 只在这里补左右内边距，再夹到 160~460 之间：太窄盖不住底下那条老文字，
+ * 太宽又会压到旁边的 K 线。
+ */
+function textBoxWidth(text: string): number {
+  return Math.max(160, Math.min(460, estimateTextWidth(text) + 28))
+}
 
 /**
  * 左上角提示条要说的话。
@@ -685,6 +697,28 @@ export function ReplayChart({
     time: number
     price: number
   } | null>(null)
+
+  /**
+   * 双击改字：编辑一条**已有**的文本画线。
+   *
+   * 记 id + 输入框该摆哪儿（锚点坐标）+ 进来时的原文 —— 原文用来判断「改没改」，
+   * 一个字没动就不必触发一次落库。
+   */
+  const [textEdit, setTextEdit] = useState<{
+    id: string
+    x: number
+    y: number
+    initial: string
+  } | null>(null)
+
+  /**
+   * Esc 取消的标记。
+   *
+   * Esc 之后输入框会卸载，某些情况下浏览器仍会补一个 blur，而 blur 的处理是
+   * 「提交」—— 不加这个标记的话按 Esc 反而把改到一半的字写进去了。
+   * 每次打开编辑前都清掉，免得吞掉下一次正常提交。
+   */
+  const textEditCancelRef = useRef(false)
 
   // 右键菜单（命中已有画线时出现）
   const [menu, setMenu] = useState<{ x: number; y: number; id: string; type: DrawingType } | null>(
@@ -2128,6 +2162,43 @@ export function ReplayChart({
       setLotMenu(null)
     }
 
+    /**
+     * 双击**文本**画线 → 就地改内容（只有文字是可编辑的，其它图形双击不拦）。
+     *
+     * 双击必然先来两次 mousedown，那两下已经把这条画线选中、并可能把它拖动了一两像素 ——
+     * 这里不做回滚：位置本来就允许拖，改完字接着拖也是正常操作。
+     *
+     * 输入框里的双击要放过去（否则刚敲的字会被重置回原文），
+     * 所以先排除掉输入框和右键菜单内部。
+     */
+    const onDblClick = (e: MouseEvent) => {
+      const node = e.target as HTMLElement | null
+      if (node?.closest('input, textarea, [data-draw-menu]')) return
+
+      const map = mapping()
+      if (!map) return
+      const { x, y } = localPoint(e)
+      for (let i = drawingsRef.current.length - 1; i >= 0; i--) {
+        const d = drawingsRef.current[i]
+        if (d.type !== 'text') continue
+        if (!hitTest(d, x, y, map)) continue
+        const ax = map.timeToX(d.p1.time)
+        const ay = map.priceToY(d.p1.price)
+        if (!Number.isFinite(ax) || !Number.isFinite(ay)) return
+        e.preventDefault()
+        e.stopPropagation()
+        selectedRef.current = d.id
+        redrawRef.current()
+        // 上一次若是 Esc 取消的，标记还挂着 —— 打开新的编辑前先清掉
+        textEditCancelRef.current = false
+        // 文字工具刚点下的那一刻也在等输入（双击的第一下会开一个空草稿），
+        // 两个输入框叠一起会互相抢焦点，这里把草稿收掉
+        setTextDraft(null)
+        setTextEdit({ id: d.id, x: ax as number, y: ay as number, initial: d.text ?? '' })
+        return
+      }
+    }
+
     const onMouseMove = (e: MouseEvent) => {
       const { x, y } = localPoint(e)
       const map = mapping()
@@ -2344,6 +2415,7 @@ export function ReplayChart({
 
     el.addEventListener('mousedown', onMouseDown, true)
     el.addEventListener('contextmenu', onContextMenu, true)
+    el.addEventListener('dblclick', onDblClick, true)
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', finish)
     window.addEventListener('keydown', onKey)
@@ -2351,6 +2423,7 @@ export function ReplayChart({
     return () => {
       el.removeEventListener('mousedown', onMouseDown, true)
       el.removeEventListener('contextmenu', onContextMenu, true)
+      el.removeEventListener('dblclick', onDblClick, true)
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', finish)
       window.removeEventListener('keydown', onKey)
@@ -2425,6 +2498,38 @@ export function ReplayChart({
     },
     [textDraft, applyDrawings]
   )
+
+  /**
+   * 提交「双击改字」。
+   *
+   * 清空 = 删掉这条文本（画布上一条空白文字既看不见又挡鼠标，留着没意义）；
+   * 内容没变就直接返回，免得白触发一次落库。
+   */
+  const commitTextEdit = useCallback(
+    (value: string) => {
+      const edit = textEdit
+      if (!edit) return
+      setTextEdit(null)
+      // Esc 取消：卸载时可能补一个 blur 进来，别当成提交
+      if (textEditCancelRef.current) {
+        textEditCancelRef.current = false
+        return
+      }
+      const label = value.trim()
+      if (label === edit.initial) return
+      const next = label
+        ? drawingsRef.current.map((d) => (d.id === edit.id ? { ...d, text: label } : d))
+        : drawingsRef.current.filter((d) => d.id !== edit.id)
+      applyDrawings(next)
+    },
+    [textEdit, applyDrawings]
+  )
+
+  /** 放弃这次改字（Esc） */
+  const cancelTextEdit = useCallback(() => {
+    textEditCancelRef.current = true
+    setTextEdit(null)
+  }, [])
 
   /**
    * 焦点持仓：提示条按它来决定说什么。
@@ -2512,6 +2617,34 @@ export function ReplayChart({
           onBlur={(e) => commitText(e.target.value)}
           className="absolute z-30 w-[150px] rounded border border-[var(--c-accent)] bg-[var(--surface-1)]/95 px-1.5 py-0.5 text-[11.5px] text-[var(--text-primary)] outline-none"
           style={{ left: textDraft.x - 2, top: textDraft.y - 14 }}
+        />
+      )}
+
+      {/*
+        双击已有文本 → 就地改字。
+        Enter / 失焦提交，Esc 放弃；清空 = 删掉这条文字（空标签既看不见又挡鼠标）。
+        用 defaultValue 走非受控：受控的话每敲一个字重渲染一次，光标会往右跑。
+      */}
+      {textEdit && (
+        <input
+          data-draw-menu="1"
+          data-text-edit="1"
+          autoFocus
+          defaultValue={textEdit.initial}
+          onFocus={(e) => e.currentTarget.select()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitTextEdit((e.target as HTMLInputElement).value)
+            if (e.key === 'Escape') cancelTextEdit()
+            // 空格是「播放/暂停」的全局热键，在输入框里得当成普通字符
+            if (e.key === ' ') e.stopPropagation()
+          }}
+          onBlur={(e) => commitTextEdit(e.target.value)}
+          className="absolute z-30 rounded border border-[var(--c-accent)] bg-[var(--surface-1)] px-1.5 py-0.5 font-semibold text-[11.5px] text-[var(--text-primary)] shadow-lg outline-none"
+          style={{
+            left: textEdit.x - 3,
+            top: textEdit.y - 14,
+            width: textBoxWidth(textEdit.initial)
+          }}
         />
       )}
 

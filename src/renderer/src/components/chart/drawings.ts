@@ -20,6 +20,25 @@ export interface Viewport {
 const HANDLE_R = 3.5
 const HIT_TOLERANCE = 6
 
+/** 文字绘制的字号，编辑框与命中盒都按它换算 */
+export const TEXT_FONT_PX = 11.5
+
+/**
+ * 文字宽度估算（没有 canvas ctx 时用）。
+ *
+ * 中日韩字符按全角 12px 算，空格 4px，其余 7px —— 和 11.5px Inter 的实际
+ * 渲染宽度基本吻合。命中盒与编辑输入框共用这一套，否则中文备注的右半边
+ * 会「看得见、点不着」。
+ */
+export function estimateTextWidth(text: string): number {
+  let w = 0
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0
+    w += code >= 0x2e80 ? 12 : code === 0x20 ? 4 : 7
+  }
+  return w
+}
+
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '')
   const r = parseInt(h.slice(0, 2), 16)
@@ -443,8 +462,8 @@ export function hitTest(
       return inside ? 'body' : null
     }
     case 'text': {
-      // 粗略按文字宽度做包围盒
-      const w = Math.max(24, (d.text?.length ?? 0) * 7)
+      // 按估算宽度做包围盒（全角字符 12px，比一律 7px 贴合中文备注）
+      const w = Math.max(24, estimateTextWidth(d.text ?? ''))
       const inside = x >= x1 - 4 && x <= x1 + w && y >= y1 - 13 && y <= y1 + 5
       return inside ? 'body' : null
     }
