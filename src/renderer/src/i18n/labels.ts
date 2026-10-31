@@ -60,10 +60,11 @@ const enLabels: Record<string, string> = {
   线: 'Line',
 
   // 数据源
-  '瑞士 Dukascopy 银行公开历史行情，按小时提供 tick 数据，可聚合成任意周期 K 线。':
-    'Public historical tick data from Dukascopy Bank SA, aggregated into candles of any timeframe.',
-  '国内直连不稳定，建议填写本地代理': 'The direct connection is unstable from mainland China — set a local proxy',
-  'Dukascopy 外汇': 'Dukascopy FX',
+  '直接向本机 cTrader 桌面端内置的 MCP 服务要历史 K 线，数据来自你自己的经纪商，走本地回环、不需要代理。':
+    'Pull historical candles straight from the MCP server built into your local cTrader desktop app — your own broker data over loopback, no proxy needed.',
+  '需 cTrader 正在运行，且在「设置 → 应用程序 → MCP 设置」里勾选「启用 MCP 服务器」（默认端口 9876）':
+    'cTrader must be running with "Enable MCP Server" ticked under Settings → Application → MCP Settings (default port 9876)',
+  'cTrader 外汇': 'cTrader FX',
   'OKX 现货公开 K 线接口，直接返回 1 分钟蜡烛，无需本地聚合。':
     'OKX public spot kline API — returns 1-minute candles directly, no local aggregation needed.',
   '国内直连需要代理；1 分钟历史深度有限，越久越容易抓空':

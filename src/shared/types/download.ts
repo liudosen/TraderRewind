@@ -3,7 +3,7 @@
 // ============================================================
 
 /** 支持的数据源 ID */
-export type DataSourceId = 'dukascopy' | 'okx' | 'binance'
+export type DataSourceId = 'okx' | 'binance' | 'ctrader'
 
 /**
  * 品种分类。
@@ -11,8 +11,20 @@ export type DataSourceId = 'dukascopy' | 'okx' | 'binance'
  * 早期只有外汇三类（主要货币对 / 交叉盘 / 贵金属），界面上直接平铺。
  * 加了加密市场之后品种数量翻倍，平铺就看不过来了，所以分类同时是
  * 界面上的「折叠分组」标识 —— 一个分类对应列表里一个可折叠的段落。
+ *
+ * 接入 cTrader 之后，经纪商的品种目录里还有指数、股票、商品等，
+ * 分类必须能容纳它们；对不上号的统一落到 other，不能因为出现
+ * 一个没见过的类别就让整张表渲染不出来。
  */
-export type InstrumentCategory = 'major' | 'cross' | 'metal' | 'crypto'
+export type InstrumentCategory =
+  | 'major'
+  | 'cross'
+  | 'metal'
+  | 'index'
+  | 'stock'
+  | 'commodity'
+  | 'crypto'
+  | 'other'
 
 /** 下载用的时间周期 */
 export type BarTimeframe = 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1'
@@ -25,7 +37,7 @@ export interface InstrumentInfo {
   name: string
   /** 分类，同时也是界面上的折叠分组 */
   category: InstrumentCategory
-  /** 价格小数位数（决定 Dukascopy 定点缩放的除数 10^digits） */
+  /** 价格小数位数（决定定点缩放的除数 10^digits） */
   digits: number
 }
 

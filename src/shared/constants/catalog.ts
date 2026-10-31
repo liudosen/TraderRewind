@@ -75,7 +75,7 @@ function buildCrypto(quote: string, sep: string): InstrumentInfo[] {
   }))
 }
 
-/** 外汇那一套（Dukascopy） */
+/** 外汇那一套 */
 const FX_INSTRUMENTS: InstrumentInfo[] = [...MAJORS, ...CROSSES, ...METALS]
 /** OKX 现货 */
 const OKX_INSTRUMENTS: InstrumentInfo[] = buildCrypto('USDT', '-')
@@ -90,8 +90,26 @@ export const ALL_INSTRUMENTS: InstrumentInfo[] = [
 
 const INSTRUMENT_MAP = new Map(ALL_INSTRUMENTS.map((i) => [i.symbol, i]))
 
+/**
+ * 运行时注册进来的品种。
+ *
+ * cTrader 的品种目录来自经纪商，静态表里不可能列全（指数、股票、各种交叉盘）。
+ * 主进程拉到目录后调 registerInstruments 注册进来，getInstrument 才能查到；
+ * 否则下载时会被 prepare() 判成「未知品种」直接拒掉。
+ * 静态表优先，保证 XAUUSD 这类内置品种的 digits 不被经纪商口径覆盖。
+ */
+const dynamicInstruments = new Map<string, InstrumentInfo>()
+
+export function registerInstruments(list: InstrumentInfo[]): void {
+  for (const item of list) {
+    if (!INSTRUMENT_MAP.has(item.symbol)) {
+      dynamicInstruments.set(item.symbol, item)
+    }
+  }
+}
+
 export function getInstrument(symbol: string): InstrumentInfo | undefined {
-  return INSTRUMENT_MAP.get(symbol)
+  return INSTRUMENT_MAP.get(symbol) ?? dynamicInstruments.get(symbol)
 }
 
 /** 是不是加密品种（代码里带 USDT 计价） */
@@ -113,7 +131,7 @@ export function getContractSize(symbol: string): number {
 
 /** 品种报价小数位；未知品种按 5 位处理 */
 export function getDigits(symbol: string): number {
-  return INSTRUMENT_MAP.get(symbol)?.digits ?? 5
+  return getInstrument(symbol)?.digits ?? 5
 }
 
 /**
@@ -190,11 +208,11 @@ export function fmtContractSize(spec: ContractSpec): string {
 
 export const DATA_SOURCES: DataSourceDescriptor[] = [
   {
-    id: 'dukascopy',
-    name: 'Dukascopy',
-    description: '瑞士 Dukascopy 银行公开历史行情，按小时提供 tick 数据，可聚合成任意周期 K 线。',
-    note: '国内直连不稳定，建议填写本地代理',
-    kind: 'tick',
+    id: 'ctrader',
+    name: 'cTrader',
+    description: '直接向本机 cTrader 桌面端内置的 MCP 服务要历史 K 线，数据来自你自己的经纪商，走本地回环、不需要代理。',
+    note: '需 cTrader 正在运行，且在「设置 → 应用程序 → MCP 设置」里勾选「启用 MCP 服务器」（默认端口 9876）',
+    kind: 'candle',
     instruments: FX_INSTRUMENTS
   },
   {

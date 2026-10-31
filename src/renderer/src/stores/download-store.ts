@@ -79,7 +79,7 @@ function scheduleProxySave(value: string): void {
 export const useDownloadStore = create<DownloadState>((set, get) => ({
   catalog: [],
   catalogLoaded: false,
-  sourceId: 'dukascopy',
+  sourceId: 'ctrader',
 
   // 不预选任何品种：替用户勾上 EURUSD 会让人误以为「已经选好了」，
   // 或者不知不觉下了一份自己没要的数据。让用户自己选。

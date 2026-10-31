@@ -24,7 +24,7 @@ export interface SaveBarsParams {
 
 /** 该数据源对应的分组名 */
 function groupNameFor(source: string, market: string): string {
-  if (source === 'dukascopy') return 'Dukascopy 外汇'
+  if (source === 'ctrader') return 'cTrader 外汇'
   if (source === 'okx') return 'OKX 加密'
   if (source === 'binance') return 'Binance 加密'
   if (market === 'cn_futures') return '国内期货'

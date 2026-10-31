@@ -56,7 +56,11 @@ const CATEGORY_LABEL_KEY: Record<string, MessageKey> = {
   major: 'ds.cat.major',
   cross: 'ds.cat.cross',
   metal: 'ds.cat.metal',
-  crypto: 'ds.cat.crypto'
+  index: 'ds.cat.index',
+  stock: 'ds.cat.stock',
+  commodity: 'ds.cat.commodity',
+  crypto: 'ds.cat.crypto',
+  other: 'ds.cat.other'
 }
 
 /** 并行请求数上限 */
@@ -122,7 +126,16 @@ export function DataSourcePanel(): React.JSX.Element {
    * 是从熟悉到陌生、从高频到低频的阅读顺序，字母序会把它打乱。
    */
   const grouped = useMemo(() => {
-    const order: InstrumentCategory[] = ['major', 'cross', 'metal', 'crypto']
+    const order: InstrumentCategory[] = [
+      'major',
+      'cross',
+      'metal',
+      'index',
+      'commodity',
+      'stock',
+      'crypto',
+      'other'
+    ]
     const groups = {} as Record<InstrumentCategory, InstrumentInfo[]>
     for (const cat of order) groups[cat] = []
     for (const item of filtered) {

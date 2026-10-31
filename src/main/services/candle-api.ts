@@ -22,8 +22,9 @@ import type {
 } from '@shared/types/download'
 import { getInstrument, TIMEFRAME_SECONDS } from '@shared/constants/catalog'
 import { fetchBuffer, describeProxyProblem } from '../utils/http'
-import { SpeedMeter } from './dukascopy'
+import { SpeedMeter } from '../utils/speed-meter'
 import { saveDownloadedBars } from '../db/dataset-repo'
+import { sharedCtraderClient } from './ctrader-mcp'
 
 /** 一根 1 分钟 K 线（时间单位为秒，与库里一致） */
 interface Candle {
@@ -43,15 +44,42 @@ interface PageResult {
 }
 
 interface CandleAdapter {
-  id: Extract<DataSourceId, 'okx' | 'binance'>
+  id: Extract<DataSourceId, 'okx' | 'binance' | 'ctrader'>
   /** 单页最多多少根 */
   pageSize: number
   /** 建议并发（交易所都有速率限制，别拿 tick 那套 64 去冲） */
   maxConcurrency: number
+  /**
+   * 翻页方向，决定游标的初值：
+   *  · backward —— 从区间右端（toMs）向左翻，游标是「本页上界」
+   *  · forward  —— 从区间左端（fromMs）向右翻
+   * 早期只靠 `id === 'okx'` 硬判，加了 cTrader 之后两处都是 backward，
+   * 再靠 id 判断就站不住了，所以提成显式字段。
+   */
+  direction: 'backward' | 'forward'
+  /** 落库时的市场标识 */
+  market: string
   /** 请求某一页：cursor 的含义由适配器自己解释 */
-  page: (symbol: string, cursor: number, fromMs: number, toMs: number, proxy?: string, signal?: AbortSignal) => Promise<PageResult>
+  page: (
+    symbol: string,
+    cursor: number,
+    fromMs: number,
+    toMs: number,
+    timeframe: BarTimeframe,
+    proxy?: string,
+    signal?: AbortSignal
+  ) => Promise<PageResult>
   /** 解析响应；返回错误文案表示这一页失败 */
   parseError: (json: any) => string | null
+  /**
+   * 可选：能否把区间预先切成**互不依赖**的窗口。
+   *
+   * 交易所接口靠游标翻页（下一页的区间取决于上一页返回的内容），没法预切，
+   * 所以只能一条链串行翻。cTrader 的 get_trendbars 接收绝对 from/to，
+   * 各页彼此独立，因此可以按固定宽度切开并行拉 —— 实测 16 路能把吞吐
+   * 从 2.5 页/秒提到 37 页/秒（服务端没有限流，32 路以后才饱和）。
+   */
+  planWindows?: (fromMs: number, toMs: number, timeframe: BarTimeframe) => { fromMs: number; toMs: number }[]
 }
 
 const MINUTE = 60_000
@@ -70,11 +98,13 @@ const okxAdapter: CandleAdapter = {
   id: 'okx',
   pageSize: 100,
   maxConcurrency: 6,
+  direction: 'backward',
+  market: 'crypto',
   parseError: (json) => {
     if (!json || json.code === undefined) return '返回格式异常'
     return json.code === '0' ? null : `${json.code} ${json.msg ?? ''}`.trim()
   },
-  page: async (symbol, cursor, fromMs, _toMs, proxy, signal) => {
+  page: async (symbol, cursor, fromMs, _toMs, _timeframe, proxy, signal) => {
     const url =
       `https://www.okx.com/api/v5/market/history-candles` +
       `?instId=${encodeURIComponent(symbol)}&bar=1m&limit=100&after=${cursor}`
@@ -119,11 +149,13 @@ const binanceAdapter: CandleAdapter = {
   id: 'binance',
   pageSize: 1000,
   maxConcurrency: 4,
+  direction: 'forward',
+  market: 'crypto',
   parseError: (json) => {
     if (Array.isArray(json)) return null
     return json?.msg ?? '返回格式异常'
   },
-  page: async (symbol, cursor, _fromMs, toMs, proxy, signal) => {
+  page: async (symbol, cursor, _fromMs, toMs, _timeframe, proxy, signal) => {
     const url =
       `https://data-api.binance.vision/api/v3/klines` +
       `?symbol=${encodeURIComponent(symbol)}&interval=1m&limit=1000` +
@@ -157,9 +189,52 @@ const binanceAdapter: CandleAdapter = {
   }
 }
 
+// ------------------------------------------------------------
+// cTrader：走桌面端内置 MCP 服务的 get_trendbars
+//
+// 和其它两家最大的不同：
+//  1) 目标在本机 127.0.0.1，绝不能套代理（套上就被转发到代理网关 502）
+//  2) from/to 是绝对时间区间，各页互不依赖 → 可以预切窗口并行
+//  3) 服务端硬上限 1000 根/次，且返回的是「靠近 to 的最后一页」，故仍是 backward
+//  4) 数据来自用户自己的经纪商（IC Markets），forex/metal，不是 crypto
+//  5) 客户端全局单例：服务端只认一个 session，各自 new 会互相踢掉
+// ------------------------------------------------------------
+const ctraderAdapter: CandleAdapter = {
+  id: 'ctrader',
+  pageSize: 1000,
+  // 压测结论：8~16 路线性扩展，32 路以后吞吐饱和但不出错，取 8 求稳
+  maxConcurrency: 8,
+  direction: 'backward',
+  market: 'fx',
+  parseError: (json) => json?.error?.message ?? null,
+
+  /**
+   * 每个窗口正好装得下 pageSize 根（窗口宽 = pageSize × 周期秒数），
+   * 这样单窗口内不会被 1000 根上限截断，也就不会漏数据。
+   * 相邻窗口在边界上可能重复一根，落库时靠 time 去重，无害。
+   */
+  planWindows: (fromMs, toMs, timeframe) => {
+    const tfSec = TIMEFRAME_SECONDS[timeframe] || 60
+    const width = 1000 * tfSec * 1000
+    const out: { fromMs: number; toMs: number }[] = []
+    for (let end = toMs; end > fromMs; end -= width) {
+      out.push({ fromMs: Math.max(fromMs, end - width), toMs: end })
+    }
+    return out
+  },
+
+  page: async (symbol, cursor, fromMs, _toMs, timeframe, _proxy, signal) => {
+    if (signal?.aborted) throw new Error('aborted')
+    const client = sharedCtraderClient()
+    // cursor 在这里表示「本窗口的时间上界」
+    return client.getTrendbarsPage(symbol, timeframe, fromMs, cursor, 1000)
+  }
+}
+
 const ADAPTERS: Record<string, CandleAdapter> = {
   okx: okxAdapter,
-  binance: binanceAdapter
+  binance: binanceAdapter,
+  ctrader: ctraderAdapter
 }
 
 /** 该数据源是不是走这套 K 线接口 */
@@ -325,11 +400,19 @@ export class CandleJob {
 
   private async downloadSymbol(state: SymbolState): Promise<void> {
     const signal = this.controller.signal
+
+    // 能预切窗口的源（cTrader）走并行分支，把来回串行的 RTT 摊掉
+    const windows = this.adapter.planWindows?.(this.fromMs, this.toMs, this.request.timeframe)
+    if (windows && windows.length > 0) {
+      await this.downloadSymbolWindows(state, windows)
+      return
+    }
+
     state.phase = 'downloading'
     state.message = '下载中…'
     this.emit()
 
-    let cursor: number = this.adapter.id === 'okx' ? this.toMs + 1 : this.fromMs
+    let cursor: number = this.adapter.direction === 'backward' ? this.toMs + 1 : this.fromMs
     let guard = 0
 
     while (!signal.aborted) {
@@ -338,7 +421,15 @@ export class CandleJob {
 
       let result: PageResult
       try {
-        result = await this.adapter.page(state.info.symbol, cursor, this.fromMs, this.toMs, this.request.proxy, signal)
+        result = await this.adapter.page(
+          state.info.symbol,
+          cursor,
+          this.fromMs,
+          this.toMs,
+          this.request.timeframe,
+          this.request.proxy,
+          signal
+        )
       } catch (e: any) {
         if (signal.aborted) return
         state.failedPages += 1
@@ -376,6 +467,75 @@ export class CandleJob {
     this.emit()
   }
 
+  /**
+   * 预切窗口的并行下载。
+   *
+   * 和游标翻页不同：这里每一段的区间事先就定死了，彼此没有依赖，
+   * 可以多路同时拉。cTrader 压测结果是 8~16 路线性扩展、零失败，
+   * 32 路以后吞吐饱和（服务端有内部串行瓶颈），所以上限取 8。
+   */
+  private async downloadSymbolWindows(
+    state: SymbolState,
+    windows: { fromMs: number; toMs: number }[]
+  ): Promise<void> {
+    const signal = this.controller.signal
+    state.phase = 'downloading'
+    state.total = windows.length
+    state.message = `并行下载 ${windows.length} 段…`
+    this.emit()
+
+    const requested = Math.floor(Number(this.request.concurrency) || 0)
+    const conc = Math.max(
+      1,
+      Math.min(
+        this.adapter.maxConcurrency,
+        requested > 0 ? requested : this.adapter.maxConcurrency,
+        windows.length
+      )
+    )
+
+    let next = 0
+    const workers = Array.from({ length: conc }, async () => {
+      while (!signal.aborted) {
+        const i = next++
+        if (i >= windows.length) return
+        const w = windows[i]
+
+        let ok = false
+        for (let attempt = 0; attempt < 3 && !ok && !signal.aborted; attempt++) {
+          try {
+            const r = await this.adapter.page(
+              state.info.symbol,
+              w.toMs,
+              w.fromMs,
+              w.toMs,
+              this.request.timeframe,
+              this.request.proxy,
+              signal
+            )
+            for (const bar of r.bars) state.bars.set(bar.time, bar)
+            state.receivedBytes += r.bars.length * 120
+            state.meter.add(r.bars.length * 120)
+            ok = true
+          } catch (e: any) {
+            if (signal.aborted) return
+            state.lastError = e?.message ?? String(e)
+            if (attempt === 2) state.failedPages += 1
+          }
+        }
+
+        state.done += 1
+        state.message = `已取 ${state.bars.size} 根（${state.done}/${windows.length} 段）`
+        this.emit()
+      }
+    })
+    await Promise.all(workers)
+
+    state.phase = 'aggregating'
+    state.endedAt = Date.now()
+    this.emit()
+  }
+
   private async saveSymbol(state: SymbolState): Promise<void> {
     const sorted = [...state.bars.values()].sort((a, b) => a.time - b.time)
     if (sorted.length === 0) {
@@ -399,7 +559,7 @@ export class CandleJob {
         symbol: state.info.symbol,
         name: state.info.name,
         timeframe: this.request.timeframe,
-        market: 'crypto',
+        market: this.adapter.market,
         source: this.adapter.id,
         timezone: 'UTC',
         pointSize: Math.pow(10, -state.info.digits),

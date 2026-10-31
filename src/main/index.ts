@@ -13,6 +13,7 @@ import { registerSettingsHandlers } from './ipc/settings-handlers'
 import { registerUpdateHandlers } from './ipc/update-handlers'
 import { scheduleStartupCheck } from './services/updater'
 import { initDatabases, closeDatabases } from './db/connection'
+import { sharedCtraderClient } from './services/ctrader-mcp'
 
 // 使用独立的用户数据目录，避免与其它同名程序共用 AppData 造成表结构冲突
 // TR_USER_DATA 仅供开发期自动化使用：把整个 userData 指到别处，测试就不会碰到真实数据
@@ -168,7 +169,19 @@ if (!gotTheLock) {
     if (process.platform !== 'darwin') app.quit()
   })
 
-  app.on('before-quit', () => {
+  let ctraderReleased = false
+  app.on('before-quit', (e) => {
     closeDatabases()
+    if (ctraderReleased) return
+    // cTrader 的 MCP session 不会自动过期，不显式 DELETE 就会一直占着名额，
+    // 攒够上限之后连握手都会被 404 拒绝。有活跃会话时多等一小会儿把 DELETE 发完。
+    const client = sharedCtraderClient()
+    if (!client.hasSession) return
+    e.preventDefault()
+    ctraderReleased = true
+    void client
+      .close()
+      .catch(() => undefined)
+      .finally(() => app.exit(0))
   })
 }
