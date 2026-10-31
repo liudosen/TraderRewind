@@ -583,6 +583,25 @@ function drawTriangle(
 }
 
 /**
+ * 主图（pane 0）在画布坐标系里的纵向范围。
+ *
+ * 画线绑的是**价格轴**，任何价格都能换算出一个 y —— 而副图（CCI/成交量那些）
+ * 和主图共用同一块 overlay 画布，于是主图里的线段会顺着延伸进副图，
+ * 看起来就是「主图的图形跑到副图上去了」。所以凡是跟价格绑定的绘制都要裁进主图。
+ *
+ * 优先问 pane 自己的 DOM 元素（最准：副图个数、拉伸比例、窗口尺寸一变它自己就跟着走）；
+ * 拿不到就退回整块画布，宁可回到旧行为也别整片画不出来。
+ */
+function mainPaneRange(chart: IChartApi, hostRect: DOMRect): { top: number; bottom: number } {
+  const el = chart.panes()[0]?.getHTMLElement()
+  if (el) {
+    const r = el.getBoundingClientRect()
+    if (r.height > 0) return { top: r.top - hostRect.top, bottom: r.bottom - hostRect.top }
+  }
+  return { top: 0, bottom: hostRect.height }
+}
+
+/**
  * 历史成交连线：把每一笔已平仓订单的「开仓价 @ 开仓时间」和「平仓价 @ 平仓时间」
  * 用一条细虚线连起来，一眼就能看出这单走了多远、是赚是亏。
  * 端点用小三角形表示方向：做多开仓朝上、平仓朝下；做空正好相反。
@@ -1110,7 +1129,24 @@ export function ReplayChart({
     const map = buildMapping()
     if (!map) return
 
-    const view = { width: rect.width, height: rect.height }
+    /**
+     * 只画主图那一块。
+     *
+     * 价格轴是「无界」的：价格跑到哪，y 就跟着算到哪，所以主图的线段、射线、
+     * 成交连线本来会一路画进下面的副图（截图里那种溢出）。
+     * 这里按 pane 0 的真实高度裁一刀，`view.height` 也一并换掉 ——
+     * 竖线、射线的延伸长度同样按主图算，不然它们还是会长到副图外面去。
+     */
+    const pane = mainPaneRange(chart, hostRect)
+    const clipTop = Math.max(0, pane.top)
+    const clipBottom = Math.max(clipTop + 1, pane.bottom)
+    const view = { width: rect.width, height: clipBottom }
+
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(0, clipTop, rect.width, clipBottom - clipTop)
+    ctx.clip()
+
     for (const d of drawingsRef.current) {
       drawShape(ctx, d, map, view, d.id === selectedRef.current)
     }
@@ -1132,6 +1168,8 @@ export function ReplayChart({
           : undefined
       drawPreview(ctx, preview.type, preview.p1, preview.p2, via)
     }
+
+    ctx.restore()
 
     // 记下这次用的是哪一版价格轴。如果价格轴其实还没算到最终值，
     // 看门狗会在下一帧发现指纹变了，再补一帧（见下面的 watchPriceScale）。
@@ -1860,6 +1898,19 @@ export function ReplayChart({
     const mapping = (): ChartMapping | null => buildMapping()
 
     /**
+     * 主图底边（容器坐标）。
+     *
+     * 副图里不该起笔：形状绑的是**价格轴**，在副图画一笔，换算出来的价格离谱到
+     * 主图上根本看不见（绘制又被裁掉了）—— 结果就是「画了个看不见的东西」。
+     * 拖拽同理，所以按下时先卡一刀。
+     */
+    const paneBottomY = (): number => {
+      const ch = chartRef.current
+      if (!ch) return Number.POSITIVE_INFINITY
+      return mainPaneRange(ch, el.getBoundingClientRect()).bottom
+    }
+
+    /**
      * 命中测试：返回最近的一条可拖线属于哪笔持仓、是哪种线。
      * 多持仓时所有持仓的线都能拖，取离鼠标最近的那条。
      */
@@ -1995,6 +2046,9 @@ export function ReplayChart({
       const { x, y } = localPoint(e)
       const map = mapping()
       if (!map) return
+
+      // 副图里不起笔（见 paneBottomY 的说明）：画了也看不见，还会挂在那挡住副图
+      if (y > paneBottomY()) return
 
       const tool = toolRef.current
       if (tool) {
@@ -2178,6 +2232,8 @@ export function ReplayChart({
       const map = mapping()
       if (!map) return
       const { x, y } = localPoint(e)
+      // 副图上的双击留给副图自己（那里没有文字，裁过之后也点不到）
+      if (y > paneBottomY()) return
       for (let i = drawingsRef.current.length - 1; i >= 0; i--) {
         const d = drawingsRef.current[i]
         if (d.type !== 'text') continue
