@@ -193,9 +193,16 @@ interface ReplayChartProps {
   onPendingCancel?: () => void
   /**
    * 图表实例就绪 / 销毁时回调。
-   * 双周期窗要跟主图同步时间范围，必须拿得到主图的时间轴 —— 这是唯一出口。
+   *
+   * 双周期窗要跟主图同步两样东西，所以两样都得给出去：
+   *  - 时间轴（chart）→ 同步可视范围；
+   *  - K 线 series → 跨图十字线要用它做「价格 ↔ 像素」换算
+   *    （`setCrosshairPosition(price, time, series)` 的第三个参数就是它）。
    */
-  onChartReady?: (chart: IChartApi | null) => void
+  onChartReady?: (
+    chart: IChartApi | null,
+    series: ISeriesApi<'Candlestick'> | null
+  ) => void
 }
 
 /**
@@ -1376,7 +1383,7 @@ export function ReplayChart({
     chartRef.current = chart
     seriesRef.current = series
     setChartApi(chart)
-    onChartReadyRef.current?.(chart)
+    onChartReadyRef.current?.(chart, series)
 
     if (import.meta.env.DEV) {
       ;(window as any).__rw_chart = { chart, series }
@@ -1447,7 +1454,7 @@ export function ReplayChart({
       chartRef.current = null
       seriesRef.current = null
       setChartApi(null)
-      onChartReadyRef.current?.(null)
+      onChartReadyRef.current?.(null, null)
       indicatorRefs.current.clear()
       posLinesRef.current.clear()
       riskModeRef.current = null

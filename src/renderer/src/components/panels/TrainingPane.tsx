@@ -33,7 +33,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useHotkeys } from 'react-hotkeys-hook'
-import type { IChartApi } from 'lightweight-charts'
+import type { IChartApi, ISeriesApi } from 'lightweight-charts'
 import {
   useTrainingStore,
   quoteUsdRate,
@@ -674,7 +674,19 @@ export function TrainingPane(): React.JSX.Element {
   })
   /** 主图实例：副窗要跟它双向同步时间范围，只能靠 ReplayChart 递出来 */
   const [mainChart, setMainChart] = useState<IChartApi | null>(null)
-  const onMainChartReady = useCallback((c: IChartApi | null) => setMainChart(c), [])
+  /**
+   * 主图的 K 线 series。
+   * 跨图十字线要用它换算价格（`setCrosshairPosition` 的第三个参数），
+   * 光有时间轴不够 —— 副窗得知道主图的价格轴把某个价位画在哪一行。
+   */
+  const [mainSeries, setMainSeries] = useState<ISeriesApi<'Candlestick'> | null>(null)
+  const onMainChartReady = useCallback(
+    (c: IChartApi | null, s: ISeriesApi<'Candlestick'> | null) => {
+      setMainChart(c)
+      setMainSeries(s)
+    },
+    []
+  )
 
   useEffect(() => {
     localStorage.setItem('tr:dualPane', dualPane ? '1' : '0')
@@ -2156,6 +2168,7 @@ export function TrainingPane(): React.JSX.Element {
                       digits={priceDigits}
                       symbol={activeSession.dataset_symbol ?? ''}
                       mainChart={mainChart}
+                      mainSeries={mainSeries}
                       active={secondaryActive}
                       // 订单历史线两个窗口都画；但只有选中的那个窗口负责「跳过去」
                       trades={closedTrades}

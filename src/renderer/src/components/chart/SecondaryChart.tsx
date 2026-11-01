@@ -20,6 +20,7 @@ import {
   type IPriceLine,
   type ITimeScaleApi,
   type ISeriesApi,
+  type MouseEventParams,
   type Time,
   type UTCTimestamp
 } from 'lightweight-charts'
@@ -52,6 +53,12 @@ interface Props {
   symbol: string
   /** 主图实例：用来双向同步时间范围 */
   mainChart: IChartApi | null
+  /**
+   * 主图的 K 线 series。
+   * 跨图十字线要用它换算价格 —— `setCrosshairPosition(price, time, series)` 的第三个
+   * 参数就是「按哪个 series 的价格轴来定位」，光有时间轴画不出横线。
+   */
+  mainSeries: ISeriesApi<'Candlestick'> | null
   /** 这个窗口是不是「选中的那个」：选中的负责驱动，另一个跟着走 */
   active: boolean
   /** 已平仓的历史交易：两个窗口都要看得见 */
@@ -69,6 +76,12 @@ interface Props {
 type Range = { from: number; to: number }
 /** 只用到时间轴这两个方法 —— 收窄类型就不必关心 lightweight-charts 的泛型 */
 type TimeScaleLike = ITimeScaleApi<Time>
+/**
+ * 程序化推送后的静默窗长度（毫秒）。
+ * 够盖住 setVisibleRange 之后图表自己再落定那一两次回调，又不至于把用户紧接着的
+ * 一次真实拖动也吞掉。
+ */
+const SYNC_MUTE_MS = 150
 
 /** 读某个时间轴当前的可视范围；还算不出来时给 null */
 function readRange(ts: TimeScaleLike): Range | null {
@@ -91,6 +104,7 @@ export function SecondaryChart({
   digits,
   symbol,
   mainChart,
+  mainSeries,
   active,
   trades,
   focusedTrade,
@@ -115,6 +129,9 @@ export function SecondaryChart({
   /** 当前是不是在驱动方（进 ref，免得数据 effect 因为选中变化重跑一遍 setData） */
   const activeRef = useRef(active)
   activeRef.current = active
+  /** 主图进 ref：alignToDriver 挂在 rAF 里，闭包读不到最新 props */
+  const mainChartRef = useRef<IChartApi | null>(mainChart)
+  mainChartRef.current = mainChart
 
   /** 成交连线与定位都读 ref：它们挂在 rAF / 事件回调里，闭包读不到最新 props */
   const tradesRef = useRef<ClosedTrade[]>(trades)
@@ -352,6 +369,22 @@ export function SecondaryChart({
   }, [buildMapping])
 
   /**
+   * 尺寸变化立刻补画一次。
+   *
+   * 光靠下面那个每帧比指纹的循环不够：画布宽高是我们按**父容器**量出来再写上去的，
+   * 指纹里如果只有画布自己的 clientWidth/clientHeight，那么「首帧量到 0 尺寸 → 画布
+   * 被写成 1×1」之后指纹就再也不会变，画布永远停在 1×1 —— 表现在界面上就是
+   * 「副窗一条订单线都没有」。
+   */
+  useEffect(() => {
+    const host = canvasRef.current?.parentElement
+    if (!host) return
+    const ro = new ResizeObserver(() => redraw())
+    ro.observe(host)
+    return () => ro.disconnect()
+  }, [redraw])
+
+  /**
    * 什么时候重画。
    *
    * lightweight-charts 不会为「价格轴自动缩放」发事件，而成交连线的 y 全靠价格轴换算 ——
@@ -367,11 +400,15 @@ export function SecondaryChart({
       const canvas = canvasRef.current
       if (chart && series && canvas) {
         const r = chart.timeScale().getVisibleRange()
+        // 父容器尺寸也要进指纹 —— 见上面 ResizeObserver 那段注释
+        const host = canvas.parentElement
         const sig = [
           r ? Number(r.from) : 0,
           r ? Number(r.to) : 0,
-          canvas.clientWidth,
-          canvas.clientHeight,
+          host ? host.clientWidth : 0,
+          host ? host.clientHeight : 0,
+          canvas.width,
+          canvas.height,
           tradesRef.current.length,
           focusedRef.current?.id ?? '',
           series.priceToCoordinate(probePriceRef.current) ?? -1
@@ -386,6 +423,81 @@ export function SecondaryChart({
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
   }, [redraw])
+
+  // ---------- 十字线联动 ----------
+  /**
+   * 鼠标在一个窗口里移动，另一个窗口也画出对应的十字线。
+   *
+   * 用的是公开 API `setCrosshairPosition(price, time, series)` / `clearCrosshairPosition()`。
+   * 两个要点：
+   *  1. 传的**不是像素**，是「价格 + 时间」。两个窗口的 x 换算比例、y 换算比例都不一样，
+   *     传像素过去只会对不上；传价格和时间过去，各自按自己的坐标轴落点，才对得上同一根 K 线、
+   *     同一个价位。
+   *  2. 程序化设十字线会反过来触发对方（也就是自己）的 crosshairMove，用静默窗挡一下，
+   *     否则两边会互相设、一路抖。
+   */
+  useEffect(() => {
+    const chart = chartRef.current
+    const series = seriesRef.current
+    if (!chart || !series || !mainChart || !mainSeries) return
+
+    /** 谁被我程序化设过十字线：短时间里它报上来的 crosshairMove 都是回声 */
+    const mute = { self: 0, main: 0 }
+    const GUARD_MS = 50
+
+    /** 鼠标位置 → 该传给对方的「时间」。优先用图表算好的 time，取不到再从 x 反推。 */
+    const timeAt = (
+      param: MouseEventParams,
+      ts: ITimeScaleApi<Time>
+    ): Time | null => {
+      if (param.time != null) return param.time
+      if (!param.point) return null
+      const t2 = ts.coordinateToTime(param.point.x)
+      return t2 == null ? null : t2
+    }
+
+    const onSelf = (param: MouseEventParams): void => {
+      if (performance.now() < mute.self) return
+      const ts = chart.timeScale()
+      const t2 = timeAt(param, ts)
+      const price = param.point ? series.coordinateToPrice(param.point.y) : null
+      mute.main = performance.now() + GUARD_MS
+      if (t2 == null || price == null) {
+        // 鼠标离开 / 停在空白处：另一边的十字线也要一起消失
+        mainChart.clearCrosshairPosition()
+        return
+      }
+      mainChart.setCrosshairPosition(Number(price), t2, mainSeries)
+    }
+
+    const onMain = (param: MouseEventParams): void => {
+      if (performance.now() < mute.main) return
+      const ts = mainChart.timeScale()
+      const t2 = timeAt(param, ts)
+      const price = param.point ? mainSeries.coordinateToPrice(param.point.y) : null
+      mute.self = performance.now() + GUARD_MS
+      if (t2 == null || price == null) {
+        chart.clearCrosshairPosition()
+        return
+      }
+      chart.setCrosshairPosition(Number(price), t2, series)
+    }
+
+    chart.subscribeCrosshairMove(onSelf)
+    mainChart.subscribeCrosshairMove(onMain)
+
+    return () => {
+      chart.unsubscribeCrosshairMove(onSelf)
+      mainChart.unsubscribeCrosshairMove(onMain)
+      // 拆掉的时候把留在对方身上的十字线擦干净，否则关掉副窗会留一根线挂在那儿
+      mute.main = performance.now() + GUARD_MS
+      try {
+        mainChart.clearCrosshairPosition()
+      } catch {
+        // 主图可能已经先一步销毁了
+      }
+    }
+  }, [mainChart, mainSeries])
 
   /** 被定位的那一笔：两边都画开/平仓价格线，只有选中的那个窗口才把视野挪过去 */
   useEffect(() => {
@@ -443,9 +555,34 @@ export function SecondaryChart({
     if (range) chart.timeScale().setVisibleLogicalRange(range)
   }, [focusedTrade?.id, focusSeq, followFocus])
 
-  /** 我刚推给主图的 / 我刚推给副窗的范围：用来挡掉随之而来的「回声」 */
-  const pushedToMainRef = useRef<Range | null>(null)
-  const pushedToSelfRef = useRef<Range | null>(null)
+  // ---------- 双窗时间范围同步 ----------
+  /**
+   * 程序化推送的「静默窗」：推给哪个窗口，就在接下来这段时间里把它的变化当成自己的回声吞掉。
+   *
+   * 为什么不能比数值：
+   * 以前的做法是「把刚推过去的范围存下来，对方报回来的如果一模一样就忽略一次」。
+   * 但两个窗口的桶不一样粗 —— 把主图 M5 的 [21:00, 23:58] 推给 M30 副窗，副窗的
+   * 可视范围会**被夹到自己最近的那根 K 线上**，比如 [21:30, 23:30]。这个被夹窄的
+   * 范围跟推过去的不相等，于是判定「不是回声」，又推回主图；主图再夹一次、再推回来……
+   * 每一轮左右两条边都往里缩一格，视野就一路收窄 —— 用户看到的就是「往右看自动放大」。
+   *
+   * 按来源挡就没有这个问题：谁被我推过，谁在静默窗内报什么我都不信。
+   */
+  const muteRef = useRef({ self: 0, main: 0 })
+
+  const pushToSelf = useCallback((r: Range): void => {
+    const chart = chartRef.current
+    if (!chart) return
+    muteRef.current.self = performance.now() + SYNC_MUTE_MS
+    pushRange(chart.timeScale(), r)
+  }, [])
+
+  const pushToMain = useCallback((r: Range): void => {
+    const main = mainChartRef.current
+    if (!main) return
+    muteRef.current.main = performance.now() + SYNC_MUTE_MS
+    pushRange(main.timeScale(), r)
+  }, [])
 
   /**
    * 把两个窗口拉齐到「选中的那个」的视野。
@@ -453,17 +590,14 @@ export function SecondaryChart({
    */
   const alignToDriver = (): void => {
     const chart = chartRef.current
-    if (!chart || !mainChart) return
-    const selfTs = chart.timeScale()
-    const mainTs = mainChart.timeScale()
-    const r = activeRef.current ? readRange(selfTs) : readRange(mainTs)
-    if (!r) return
+    const main = mainChartRef.current
+    if (!chart || !main) return
     if (activeRef.current) {
-      pushedToMainRef.current = r
-      pushRange(mainTs, r)
+      const r = readRange(chart.timeScale())
+      if (r) pushToMain(r)
     } else {
-      pushedToSelfRef.current = r
-      pushRange(selfTs, r)
+      const r = readRange(main.timeScale())
+      if (r) pushToSelf(r)
     }
   }
 
@@ -508,15 +642,14 @@ export function SecondaryChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bars, mainChart])
 
-  // ---------- 同步：两边都跟，但挡掉自己推过去的「回声」 ----------
+  // ---------- 同步：两边都跟，但按「来源」挡掉自己推过去的回声 ----------
   /**
    * 为什么不是「只让选中的那个驱动」：
    * 回放推进时主图会自动往右滚（贴边跟随最新一根），这时候就算选中的是副窗，
    * 主图也在动 —— 只订阅一方的话两边立刻走散。
    *
-   * 所以两边都订阅，只用「我刚推过去的那个范围」做回声抑制：
-   * 对方报上来的范围跟我刚推过去的一模一样，那就是我自己的动作，忽略一次。
-   * 比按时间窗挡（80ms 内的真实用户操作会被误吞）准得多。
+   * 所以两边都订阅，但谁被我程序化推过，谁在静默窗内报上来的变化一律不相信。
+   * 详见上面 muteRef 的注释：按数值比会被「桶被夹窄」骗过去，按来源比不会。
    */
   useEffect(() => {
     const chart = chartRef.current
@@ -524,29 +657,17 @@ export function SecondaryChart({
     const selfTs = chart.timeScale()
     const mainTs = mainChart.timeScale()
 
-    const same = (a: Range | null, b: Range | null): boolean =>
-      !!a && !!b && Math.abs(a.from - b.from) < 0.5 && Math.abs(a.to - b.to) < 0.5
-
     const onSelf = (): void => {
+      if (performance.now() < muteRef.current.self) return
       const r = readRange(selfTs)
       if (!r) return
-      // 这是刚被主图推过来的：不往回推，否则两个窗口会互相推着跑
-      if (same(r, pushedToSelfRef.current)) {
-        pushedToSelfRef.current = null
-        return
-      }
-      pushedToMainRef.current = r
-      pushRange(mainTs, r)
+      pushToMain(r)
     }
     const onMain = (): void => {
+      if (performance.now() < muteRef.current.main) return
       const r = readRange(mainTs)
       if (!r) return
-      if (same(r, pushedToMainRef.current)) {
-        pushedToMainRef.current = null
-        return
-      }
-      pushedToSelfRef.current = r
-      pushRange(selfTs, r)
+      pushToSelf(r)
     }
 
     // 刚建图 / 刚切换选中窗口：先对齐一次，再开始跟
@@ -561,7 +682,7 @@ export function SecondaryChart({
     }
     // alignToDriver 只读 ref
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mainChart, active])
+  }, [mainChart, active, pushToMain, pushToSelf])
 
   const tfMenu = (
     <div className="absolute left-0 top-full z-40 mt-1 w-[136px] rounded-md border border-[var(--border-strong)] bg-[var(--surface-1)] p-1 shadow-2xl">
@@ -637,8 +758,15 @@ export function SecondaryChart({
 
       <div className="relative min-h-0 flex-1">
         <div ref={hostRef} data-secondary-chart="1" className="h-full w-full" />
-        {/* 成交连线画在图表上面一层：跟主图同一套 drawTrades，两边看起来才是同一张图 */}
-        <canvas ref={canvasRef} data-secondary-overlay="1" className="pointer-events-none absolute left-0 top-0" />
+        {/* 成交连线画在图表上面一层：跟主图同一套 drawTrades，两边看起来才是同一张图。
+            这里必须显式给 z-index —— lightweight-charts 自己的画布是 position:absolute 且
+            z-index:1/2，我们这块只写 absolute 的话处于 z-index:auto(0)，会整块被压在
+            蜡烛底下，像素明明画上去了、用户却一条也看不见。 */}
+        <canvas
+          ref={canvasRef}
+          data-secondary-overlay="1"
+          className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+        />
       </div>
     </div>
   )
