@@ -6,6 +6,7 @@ import React, {
   useRef,
   useState
 } from 'react'
+import { Check, X } from 'lucide-react'
 import {
   createChart,
   CandlestickSeries,
@@ -166,7 +167,48 @@ interface ReplayChartProps {
   revealIndex?: number
   /** 点击图表 / 按 Esc 时通知外部清掉聚焦交易 */
   onClearFocus?: () => void
+  /**
+   * 待确认的下单（按 B/S 之后先摆在图上、点「确认」才算真正持仓）。
+   *
+   * 它不是持仓：不参与浮动盈亏、不进持仓卡、平仓统计也看不到它。
+   * 图表这边只负责三件事 —— 画三条线（开仓 / 止损 / 止盈）、让用户拖着调、
+   * 在开仓线那一行摆出「方向+手数」「风险金额」「确认」「取消」。
+   */
+  pendingOrder?: PendingOrderView | null
+  /** 拖待确认单的止损（夹取由上层负责，图表只报原始价） */
+  onPendingSlChange?: (price: number) => void
+  /** 拖待确认单的止盈 */
+  onPendingTpChange?: (price: number) => void
+  /** 点「确认」：上层会弹出备注浮窗，填完才真正开仓 */
+  onPendingConfirm?: () => void
+  /** 点「取消」或按 Esc：这张单子作废 */
+  onPendingCancel?: () => void
 }
+
+/**
+ * 图表需要的待确认单视图。
+ *
+ * 文案（手数、风险金额）都由上层拼好传进来 —— 手数格式化、佣金、汇率、
+ * 交叉盘折算全在上层，图表不该再算一遍。
+ */
+export interface PendingOrderView {
+  side: 'buy' | 'sell'
+  entry: number
+  sl: number | null
+  tp: number | null
+  /** 左侧框：方向 + 手数，例如「买 0.10 手」 */
+  lotText: string
+  /** 右侧框：按当前止损算出来的金额，例如「-$12.40」；没设止损时是提示文案 */
+  riskText: string
+  /** 风险金额是不是一笔真实亏损（决定字色：亏=绿/青，赚=红，与全局涨跌色一致） */
+  riskIsLoss: boolean
+  /** 止损/止盈线轴标签上的金额（没设就空串） */
+  slLabel?: string
+  tpLabel?: string
+}
+
+/** 待确认单在命中判定里用的伪 id：和真实持仓 id（`pos_…`）不会撞 */
+const PENDING_ID = '__pending_order__'
 
 const ENTRY_COLOR = '#9ca3af'
 /** 多/空开仓线：对冲时两条线并排，用颜色区分方向和持仓卡里的标签对应 */
@@ -664,6 +706,112 @@ function drawTrades(
   ctx.restore()
 }
 
+/**
+ * 票面底色。必须是不透明的实色：它是浮在 K 线上的，半透明会让影线从字缝里穿过去。
+ * 取 surface-2（#1a1a1a）而不是 surface-0（#0b0b0b）—— 比图表底色亮一档，
+ * 才看得出这是「浮在上面的一张票」而不是画进图里的一个元素。
+ */
+const PANEL_BG = '#1a1a1a'
+
+/**
+ * 待确认单贴在开仓线上的那一行「票面」。
+ *
+ * 布局：[方向+手数] [风险金额] [确认] [取消✕]
+ *
+ * 为什么用 HTML 而不是画在 canvas 上：这四个都是要点的（确认/取消是按钮），
+ * 画在 canvas 上就得自己做命中判定、悬停态、键盘可达性 —— 用 DOM 全是白送的。
+ * 它跟着价格线走，所以自己跑一个 requestAnimationFrame 取 y；
+ * 只在这个组件内部 setState，不牵动整个图表重渲染。
+ */
+function PendingTicket({
+  order,
+  priceToY,
+  onConfirm,
+  onCancel
+}: {
+  order: PendingOrderView
+  /** 价格 → 容器内 y 坐标（拿不到时返回 null，比如价格被缩放到视野外） */
+  priceToY: (price: number) => number | null
+  onConfirm: () => void
+  onCancel: () => void
+}): React.JSX.Element | null {
+  const { t } = useT()
+  const [y, setY] = useState<number | null>(() => priceToY(order.entry))
+
+  useEffect(() => {
+    let raf = 0
+    let last: number | null = null
+    const tick = (): void => {
+      const next = priceToY(order.entry)
+      // 只在真的动了才 setState：缩放/平移时每帧都在变，但静止时一帧都不该重渲染
+      if (next == null ? last != null : last == null || Math.abs(next - last) > 0.5) {
+        last = next
+        setY(next)
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    tick()
+    return () => cancelAnimationFrame(raf)
+  }, [order.entry, priceToY])
+
+  // 价格跑到视野外就不显示，免得贴在顶部/底部当成「就在那儿」
+  if (y == null || y < 0) return null
+
+  const sideColor = order.side === 'buy' ? ENTRY_BUY_COLOR : ENTRY_SELL_COLOR
+
+  return (
+    <div
+      data-pending-ticket="1"
+      className="absolute z-30 flex -translate-y-1/2 items-center gap-1.5"
+      style={{ left: 8, top: y }}
+    >
+      {/* 左框：方向 + 手数（手数用等宽字体，扫一眼就能分清 0.10 还是 0.01）
+          底色写死实色：`bg-[var(--surface-1)]/97` 这种写法 Tailwind 加了透明度修饰符
+          也生成不出合法声明（CSS 变量没法在编译期算 alpha），结果是透明 —— K 线直接从
+          框里穿过去，金额根本看不清。 */}
+      <span
+        className="inline-flex h-[21px] items-center rounded-[3px] border px-2 text-[11px] font-medium leading-none shadow-[0_1px_5px_rgba(0,0,0,0.7)]"
+        style={{
+          borderColor: sideColor,
+          color: sideColor,
+          backgroundColor: PANEL_BG
+        }}
+      >
+        {order.lotText}
+      </span>
+
+      {/* 右框：按当前止损算出来的金额（没设止损时是提示文案，用次级色） */}
+      <span
+        className="inline-flex h-[21px] items-center rounded-[3px] border border-[var(--border-strong)] px-2 font-mono text-[11px] leading-none shadow-[0_1px_5px_rgba(0,0,0,0.7)]"
+        style={{
+          color: order.riskIsLoss ? 'var(--c-pos)' : 'var(--text-muted)',
+          backgroundColor: PANEL_BG
+        }}
+      >
+        {order.riskText}
+      </span>
+
+      <button
+        onClick={onConfirm}
+        title={t('chart.pendingConfirmHint', { key: order.side === 'buy' ? 'B' : 'S' })}
+        className="inline-flex h-[21px] items-center gap-1 rounded-[3px] bg-[var(--c-accent)] px-2 text-[11px] font-medium leading-none text-white shadow-[0_1px_5px_rgba(0,0,0,0.7)] transition hover:brightness-110"
+      >
+        <Check size={11} strokeWidth={3} />
+        {t('chart.pendingConfirm')}
+      </button>
+
+      <button
+        onClick={onCancel}
+        title={t('chart.pendingCancelHint')}
+        className="inline-flex h-[21px] w-[21px] items-center justify-center rounded-[3px] border border-[var(--border-strong)] text-[var(--text-muted)] shadow-[0_1px_5px_rgba(0,0,0,0.7)] transition-colors hover:border-[var(--c-neg)] hover:text-[var(--c-neg)]"
+        style={{ backgroundColor: PANEL_BG }}
+      >
+        <X size={12} />
+      </button>
+    </div>
+  )
+}
+
 export function ReplayChart({
   bars,
   cursor,
@@ -693,7 +841,12 @@ export function ReplayChart({
   focusedTrade,
   focusSeq,
   revealIndex,
-  onClearFocus
+  onClearFocus,
+  pendingOrder,
+  onPendingSlChange,
+  onPendingTpChange,
+  onPendingConfirm,
+  onPendingCancel
 }: ReplayChartProps): React.JSX.Element {
   const { t, locale } = useT()
   const theme = useChartThemeStore((s) => s.theme)
@@ -772,6 +925,29 @@ export function ReplayChart({
   const riskModeRef = useRef<'free' | 'sl' | 'tp' | null>(null)
   /** 正在拖的是哪一笔持仓 */
   const dragPosRef = useRef<string | null>(null)
+
+  /**
+   * 待确认单的几条价格线 + 最新快照。
+   *
+   * 鼠标事件是绑在图表容器上的（effect 只挂一次），闭包里永远是挂载那一刻的 props，
+   * 所以待确认单必须走 ref 才读得到最新值 —— 和 positions 用 positionsRef 是同一回事。
+   */
+  const pendingRef = useRef<PendingOrderView | null>(null)
+  pendingRef.current = pendingOrder ?? null
+  const pendingLinesRef = useRef<{ entry?: IPriceLine; sl?: IPriceLine; tp?: IPriceLine }>({})
+  /** 待确认单的回调也走 ref：鼠标事件闭包是挂载那一刻的，直接用 prop 会调到旧函数 */
+  const pendingCbRef = useRef({
+    sl: onPendingSlChange,
+    tp: onPendingTpChange,
+    confirm: onPendingConfirm,
+    cancel: onPendingCancel
+  })
+  pendingCbRef.current = {
+    sl: onPendingSlChange,
+    tp: onPendingTpChange,
+    confirm: onPendingConfirm,
+    cancel: onPendingCancel
+  }
 
   const prevLenRef = useRef(0)
   const prevBarsRef = useRef<Bar[] | null>(null)
@@ -1096,6 +1272,17 @@ export function ReplayChart({
       }
     }
   }, [])
+
+  /**
+   * 待确认单票面用的价格 → y 换算。
+   *
+   * 单独包一层是因为 `PendingTicket` 里在 rAF 循环里每帧都要调它：
+   * 必须是稳定引用，否则每次父级重渲染都会重启动画循环。
+   */
+  const pendingPriceToY = useCallback(
+    (price: number): number | null => buildMapping()?.priceToY(price) ?? null,
+    [buildMapping]
+  )
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current
@@ -1761,6 +1948,86 @@ export function ReplayChart({
   }, [posLineSig, activePositionId, positions, t])
 
   /**
+   * 待确认单的三条线。
+   *
+   * 和持仓分开画，原因有二：
+   *  1) 它不是持仓，不该混进 positions 影响浮动盈亏、持仓卡、平仓统计；
+   *  2) 它比持仓多两样东西 —— 开仓线不带 title（那一行要留给 HTML 的
+   *     「方向+手数 / 风险金额 / 确认 / 取消」），而且拖动语义更简单（只有止损止盈两条可拖）。
+   *
+   * 用 createPriceLine 而不是 update：线数固定最多三条，重建成本可以忽略，
+   * 反而少一堆「线被删了还在 applyOptions」的边界情况要处理。
+   */
+  const pendingSig = pendingOrder
+    ? `${pendingOrder.side}|${pendingOrder.entry}|${pendingOrder.sl}|${pendingOrder.tp}|${pendingOrder.slLabel ?? ''}|${pendingOrder.tpLabel ?? ''}`
+    : ''
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series) return
+
+    for (const pl of Object.values(pendingLinesRef.current)) {
+      if (!pl) continue
+      try {
+        series.removePriceLine(pl)
+      } catch {
+        // 已经不存在
+      }
+    }
+    pendingLinesRef.current = {}
+
+    const p = pendingRef.current
+    if (!p) return
+
+    const sideColor = p.side === 'buy' ? ENTRY_BUY_COLOR : ENTRY_SELL_COLOR
+    // 开仓线不带 title：那一行由 HTML 票面（手数 / 风险 / 确认 / 取消）占着，
+    // 再让 lightweight-charts 在左端叠一个标题就会两层文字糊在一起
+    pendingLinesRef.current.entry = series.createPriceLine({
+      price: p.entry,
+      color: sideColor,
+      lineWidth: 1,
+      lineStyle: 2,
+      axisLabelVisible: true,
+      title: ''
+    })
+    if (p.sl != null) {
+      pendingLinesRef.current.sl = series.createPriceLine({
+        price: p.sl,
+        color: SL_COLOR,
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: p.slLabel ? `SL ${p.slLabel}` : 'SL'
+      })
+    }
+    if (p.tp != null) {
+      pendingLinesRef.current.tp = series.createPriceLine({
+        price: p.tp,
+        color: TP_COLOR,
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: p.tpLabel ? `TP ${p.tpLabel}` : 'TP'
+      })
+    }
+  }, [pendingSig])
+
+  /** 待确认单没了就把线清干净（卸载时也走一次，别把线留在别的会话里） */
+  useEffect(() => {
+    return () => {
+      const series = seriesRef.current
+      for (const pl of Object.values(pendingLinesRef.current)) {
+        if (!pl || !series) continue
+        try {
+          series.removePriceLine(pl)
+        } catch {
+          // 图表已经销毁
+        }
+      }
+      pendingLinesRef.current = {}
+    }
+  }, [])
+
+  /**
    * 价格变动（含拖动中每帧）：只改线的位置和标签，不重建。
    *
    * 标签里带着「打到这里净盈亏多少」，而它随止损价一起每帧变化（用户在拖），
@@ -1937,6 +2204,18 @@ export function ReplayChart({
         if (pos.sl == null || pos.tp == null) consider(pos.id, 'risk', pos.entryPrice)
         consider(pos.id, 'sl', pos.sl)
         consider(pos.id, 'tp', pos.tp)
+      }
+
+      /**
+       * 待确认单的线排在最前面判断：它盖在持仓线之上，视觉上就在最上层，
+       * 命中也该优先 —— 否则刚按完 B 想去拖止损，一拖却把下面那笔老持仓动了。
+       */
+      const pend = pendingRef.current
+      if (pend) {
+        // 两条线都空时，开仓线本身就是「拖出来设哪一条」的把手
+        if (pend.sl == null || pend.tp == null) consider(PENDING_ID, 'risk', pend.entry)
+        consider(PENDING_ID, 'sl', pend.sl)
+        consider(PENDING_ID, 'tp', pend.tp)
       }
       return hit.best ? { id: hit.best.id, key: hit.best.key } : null
     }
@@ -2139,16 +2418,26 @@ export function ReplayChart({
       if (hit) {
         dragRef.current = hit.key
         dragPosRef.current = hit.id
-        // 点到哪笔持仓的线，就把它设为操作焦点（持仓卡高亮、价格卡跟着变）
-        onSelectPosition?.(hit.id)
+        // 点到哪笔持仓的线，就把它设为操作焦点（持仓卡高亮、价格卡跟着变）。
+        // 待确认单不是持仓，不能拿去 selectPosition —— 传进去会找不到这笔而清空焦点。
+        if (hit.id !== PENDING_ID) onSelectPosition?.(hit.id)
         /**
          * 拖开仓线之前先按「此刻」的持仓定一下这次允许设什么：
          * 两个都空 → 自由拖（方向决定是止损还是止盈）；
          * 已有止盈 → 只能拖止损；已有止损 → 只能拖止盈。
          */
         if (hit.key === 'risk') {
-          const p = positionsRef.current.find((x) => x.id === hit.id)
-          riskModeRef.current = !p ? 'free' : p.sl == null && p.tp == null ? 'free' : p.sl == null ? 'sl' : 'tp'
+          const src =
+            hit.id === PENDING_ID
+              ? pendingRef.current
+              : positionsRef.current.find((x) => x.id === hit.id)
+          riskModeRef.current = !src
+            ? 'free'
+            : src.sl == null && src.tp == null
+              ? 'free'
+              : src.sl == null
+                ? 'sl'
+                : 'tp'
         } else {
           riskModeRef.current = null
         }
@@ -2361,6 +2650,33 @@ export function ReplayChart({
       if (dragRef.current) {
         const price = map.yToPrice(y)
         if (price == null) return
+
+        /**
+         * 待确认单：只有「拖出来设止损/止盈」这一种语义，没有持仓那边的成本价夹取。
+         *
+         * 方向判定和持仓那条一样：往上甩是止盈、往下甩是止损（空头相反），
+         * 已经有了一边就只认缺的那一边。具体能拖到哪由上层夹取 ——
+         * 图表只负责把用户拖到的原始价报上去。
+         */
+        if (dragPosRef.current === PENDING_ID) {
+          const pend = pendingRef.current
+          if (!pend) return
+          const up = price > pend.entry
+          const byDir: 'sl' | 'tp' =
+            pend.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
+          const mode = riskModeRef.current
+          const kind: 'sl' | 'tp' =
+            dragRef.current === 'sl' || dragRef.current === 'tp'
+              ? dragRef.current
+              : mode === 'sl'
+                ? 'sl'
+                : mode === 'tp'
+                  ? 'tp'
+                  : byDir
+          if (kind === 'sl') pendingCbRef.current.sl?.(price)
+          else pendingCbRef.current.tp?.(price)
+          return
+        }
 
         // 拖的是「按下时命中的那一笔」，不是当前焦点那一笔
         const dragId = dragPosRef.current
@@ -2648,6 +2964,16 @@ export function ReplayChart({
         ref={canvasRef}
         className="pointer-events-none absolute inset-0 z-10 h-full w-full"
       />
+
+      {/* 待确认单：开仓线那一行的「票面」（手数 / 风险金额 / 确认 / 取消） */}
+      {pendingOrder && (
+        <PendingTicket
+          order={pendingOrder}
+          priceToY={pendingPriceToY}
+          onConfirm={() => pendingCbRef.current.confirm?.()}
+          onCancel={() => pendingCbRef.current.cancel?.()}
+        />
+      )}
 
       {/* 指标图例：点名字改参数/线色；十字线移动时在各自左上角显示当前数值 */}
       <IndicatorLegend

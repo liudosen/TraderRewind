@@ -43,7 +43,7 @@ import {
   revealIndexOf,
   type Position
 } from '../../stores/training-store'
-import { ReplayChart } from '../chart/ReplayChart'
+import { ReplayChart, type PendingOrderView } from '../chart/ReplayChart'
 import { useTrainingClock } from '../../hooks/use-training-clock'
 import { DateRangePicker } from '../common/DateRangePicker'
 import { TagFilter, useTagFilter } from '../common/TagFilter'
@@ -61,7 +61,7 @@ import { formatNumber, formatPrice, formatSigned } from '../../utils/format'
 import { ExecutionCostCard } from '../common/ExecutionCostCard'
 import { getContractSize } from '@shared/constants/catalog'
 import { describeContract, pointValuePerLot, rateSourceLabel } from '@shared/utils/pnl'
-import { closeBreakdown } from '@shared/types/execution-cost'
+import { closeBreakdown, commissionPerSide, slippagePrice } from '@shared/types/execution-cost'
 import { useTimezoneStore } from '../../stores/timezone-store'
 import { useT, translateLabel, type MessageKey } from '../../i18n'
 import { tzPartsFromSec } from '@shared/types/timezone'
@@ -518,6 +518,22 @@ export function TrainingPane(): React.JSX.Element {
     localStorage.setItem('tr:sessionSidebar', sessionSidebarOpen ? '1' : '0')
   }, [sessionSidebarOpen])
   const [orderSide, setOrderSide] = useState<'buy' | 'sell' | null>(null)
+  /**
+   * 图上那张「待确认的下单」。
+   *
+   * 按 B/S 只创建它，不直接开仓：用户在图上看得见开仓线、能拖止损止盈、
+   * 能看见这笔要下多少手、亏多少，点「确认」才进备注浮窗，填完才真正成交。
+   *
+   * 手数不存这里 —— 直接跟着工具栏那个 `lot` 走，这样按 ↑/↓ 时票面上的手数
+   * 立刻变，不会出现「票面写 0.10、实际下 0.20」的两套数。
+   */
+  const [orderDraft, setOrderDraft] = useState<{
+    side: 'buy' | 'sell'
+    entry: number
+    entryTime: number
+    sl: number | null
+    tp: number | null
+  } | null>(null)
   const [orderNote, setOrderNote] = useState('')
   /** 开仓时给这笔单子打的标签（最多 10 个，随订单存进当前回测集） */
   const [orderTags, setOrderTags] = useState<string[]>([])
@@ -628,13 +644,21 @@ export function TrainingPane(): React.JSX.Element {
     const block = tradeWindowBlock()
     if (block) {
       setOrderSide(null)
+      setOrderDraft(null)
       flash(translateLabel(locale, block))
       return
     }
-    // 弹窗已经开着、又按了同一个方向键 = 直接下单（B/B、S/S 都能这么用）
+    // 浮窗已经开着、又按了同一个方向键 = 直接下单（B/B、S/S 都能这么用）
     // 走 ref 调到最新那版 submitOrder，这样框里已经写好的备注、点亮的标签都会带上
     if (orderSide === side) {
       submitOrderRef.current(true)
+      return
+    }
+    // 待确认单已经在图上、又按了同方向 = 进备注浮窗（等同点票面上的「确认」）
+    if (orderDraft?.side === side) {
+      const st = useTrainingStore.getState()
+      if (st.playing) st.setPlaying(false)
+      setOrderSide(side)
       return
     }
     // 开仓弹窗打开时行情继续跑会让人来不及看清价格，先暂停自动播放。
@@ -642,11 +666,31 @@ export function TrainingPane(): React.JSX.Element {
     // 闭包里的 playing 可能是旧值，导致「弹窗打开了但还在播放」。
     const st = useTrainingStore.getState()
     if (st.playing) st.setPlaying(false)
+
+    /**
+     * 在图上摆一条待确认的下单线，而不是先弹浮窗。
+     *
+     * 成交价在**按下这一刻**就定死：回放已经暂停，用户拖止损止盈、看金额都基于这条线，
+     * 确认时若再按当时的价格重算，线会跳一下，等于把用户刚才拖的东西作废。
+     * 滑点在这里就计进去 —— 票面上写的价，就是他真正会成交的价。
+     */
+    const bar = st.partialBar ?? st.bars[st.cursor]
+    // 一根 K 线都没有时摆不出价格线，直接什么都不做
+    if (!bar) return
+    const slip = slippagePrice(st.executionCost, st.digits)
+    const raw = side === 'buy' ? bar.close + slip : bar.close - slip
+    setOrderDraft({
+      side,
+      entry: Number(raw.toFixed(st.digits)),
+      entryTime: st.cursorTime || bar.time,
+      sl: null,
+      tp: null
+    })
+    setOrderSide(null)
     setOrderNote('')
     setOrderTags([])
     setTagDraft('')
     setTagEditing(false)
-    setOrderSide(side)
   }
 
   const submitOrder = (withNote: boolean): void => {
@@ -655,6 +699,7 @@ export function TrainingPane(): React.JSX.Element {
     const block = tradeWindowBlock()
     if (block) {
       setOrderSide(null)
+      setOrderDraft(null)
       flash(translateLabel(locale, block))
       return
     }
@@ -665,8 +710,26 @@ export function TrainingPane(): React.JSX.Element {
       pending && !orderTags.includes(pending) && orderTags.length < MAX_TRADE_TAGS
         ? [...orderTags, pending]
         : orderTags
-    openPosition(orderSide, withNote ? orderNote : undefined, tags)
+    /**
+     * 成交价 / 手数 / 止损止盈都取图上那张待确认单的 —— 用户在图上看到什么，
+     * 成交就是什么。没有待确认单（老路径，理论上走不到）就交给 store 按当前 K 线算。
+     */
+    openPosition(
+      orderSide,
+      withNote ? orderNote : undefined,
+      tags,
+      orderDraft
+        ? {
+            entry: orderDraft.entry,
+            entryTime: orderDraft.entryTime,
+            sl: orderDraft.sl,
+            tp: orderDraft.tp,
+            lot
+          }
+        : undefined
+    )
     setOrderSide(null)
+    setOrderDraft(null)
     setOrderNote('')
     setOrderTags([])
     setTagDraft('')
@@ -718,6 +781,25 @@ export function TrainingPane(): React.JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [orderSide])
+
+  /**
+   * 待确认单的 Esc：撤掉这张单子。
+   *
+   * 和浮窗那个 Esc 分开写、优先级也分开 —— 两个状态不会同时存在
+   * （点「确认」时浮窗接手、单子仍然留在图上，此时 Esc 该关浮窗而不是撕单）。
+   */
+  useEffect(() => {
+    if (!orderDraft || orderSide) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      // 输入框里按 Esc 是「退出输入」的意思，别顺手把单子撕了
+      const el = e.target as HTMLElement | null
+      if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return
+      setOrderDraft(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [orderDraft, orderSide])
 
   // 关窗 / 切走 / 离开训练页时，把当前回放进度写进会话，下次打开接着打
   useEffect(() => {
@@ -859,6 +941,81 @@ export function TrainingPane(): React.JSX.Element {
   )
 
   /**
+   * 待确认单在图上那张票面：左边「方向+手数」、右边「风险金额」。
+   *
+   * 金额不是随手估的 —— 拿一个**假的 Position** 去调 `closeAt`，
+   * 用的就是真实成交那套算法（开仓佣金、平仓佣金、滑点、交叉盘折算）。
+   * 这样票面上写 -$12.40，确认成交后止损线上写的也一定是 -$12.40；
+   * 各算一套的话，两个数对不上，用户会以为哪边算错了。
+   *
+   * 手数直接取工具栏那个 `lot`：按 ↑/↓ 调手数时票面立刻跟着变。
+   */
+  const pendingView = useMemo<PendingOrderView | null>(() => {
+    if (!orderDraft) return null
+    const contractSize = symbol ? getContractSize(symbol) : 100
+    const entryRate = quoteUsdRate(symbol ?? '', orderDraft.entry, { quoteToUsd: quoteToUsdNow }).rate
+    const synthetic: Position = {
+      id: '__pending__',
+      side: orderDraft.side,
+      symbol: symbol ?? '',
+      lot,
+      entryPrice: orderDraft.entry,
+      entryTime: orderDraft.entryTime,
+      sl: orderDraft.sl,
+      tp: orderDraft.tp,
+      digits: priceDigits,
+      contractSize,
+      entryCommission: commissionPerSide(executionCost, lot, contractSize, orderDraft.entry, entryRate),
+      note: null,
+      tags: []
+    }
+    // 止损是市价单（吃滑点），止盈是限价成交（不吃）—— 与 riskPnlLabel 一致
+    const slNet = orderDraft.sl != null ? closeAt(synthetic, lot, orderDraft.sl, true).net : null
+    const tpNet = orderDraft.tp != null ? closeAt(synthetic, lot, orderDraft.tp, false).net : null
+    return {
+      side: orderDraft.side,
+      entry: orderDraft.entry,
+      sl: orderDraft.sl,
+      tp: orderDraft.tp,
+      lotText: t('chart.pendingLot', {
+        side: orderDraft.side === 'buy' ? t('training.buy') : t('training.sell'),
+        lot: lot.toFixed(2)
+      }),
+      riskText: slNet == null ? t('chart.pendingNoSl') : money(slNet),
+      riskIsLoss: slNet != null && slNet < 0,
+      slLabel: slNet == null ? '' : money(slNet),
+      tpLabel: tpNet == null ? '' : money(tpNet)
+    }
+  }, [orderDraft, lot, symbol, priceDigits, executionCost, quoteToUsdNow, closeAt, money, t])
+
+  /**
+   * 拖待确认单的止损/止盈。
+   *
+   * 夹取规则比持仓宽松一点，因为这时候还没有持仓、也就没有「现价」可参考：
+   * 止损只能落在开仓价的亏损侧、止盈只能落在盈利侧，各自至少离一个最小跳动。
+   * 反向越界不是「拒绝」，而是贴着边界 —— 手感上像拖到墙，不会突然弹回去。
+   */
+  const setPendingRisk = useCallback(
+    (kind: 'sl' | 'tp', price: number): void => {
+      setOrderDraft((d) => {
+        if (!d) return d
+        const point = Math.pow(10, -priceDigits)
+        const buy = d.side === 'buy'
+        const v = Number(price.toFixed(priceDigits))
+        if (kind === 'sl') {
+          const maxSl = Number((d.entry - point).toFixed(priceDigits))
+          const minSl = Number((d.entry + point).toFixed(priceDigits))
+          return { ...d, sl: buy ? Math.min(v, maxSl) : Math.max(v, minSl) }
+        }
+        const minTp = Number((d.entry + point).toFixed(priceDigits))
+        const maxTp = Number((d.entry - point).toFixed(priceDigits))
+        return { ...d, tp: buy ? Math.max(v, minTp) : Math.min(v, maxTp) }
+      })
+    },
+    [priceDigits]
+  )
+
+  /**
    * 浮动盈亏 = 所有持仓各自的净浮动之和。
    *
    * 多持仓 / 双向对冲时不能只看一笔：一边多一边空的时候，
@@ -919,10 +1076,10 @@ export function TrainingPane(): React.JSX.Element {
     (e) => {
       e.preventDefault()
       // 备注浮窗开着时不响应：否则会在弹窗背后偷偷开始/暂停回放
-      if (orderSide) return
+      if (orderSide || orderDraft) return
       if (activeSession) togglePlay()
     },
-    [activeSession, togglePlay, orderSide]
+    [activeSession, togglePlay, orderSide, orderDraft]
   )
   // 回放控制：Shift+→ 逐根前进、空格 播放/暂停
   // 回测不允许回退（不提供「上一根」），避免用户反悔已发生的行情
@@ -930,10 +1087,10 @@ export function TrainingPane(): React.JSX.Element {
     'shift+arrowright',
     (e) => {
       e.preventDefault()
-      if (orderSide) return
+      if (orderSide || orderDraft) return
       if (activeSession) advance()
     },
-    [activeSession, advance, orderSide]
+    [activeSession, advance, orderSide, orderDraft]
   )
   // B / S / C 开平仓快捷键
   // 弹窗打开时会再把焦点交还给页面（不自动聚焦备注框），所以这里始终能收到按键：
@@ -944,7 +1101,7 @@ export function TrainingPane(): React.JSX.Element {
       e.preventDefault()
       beginOrder('buy')
     },
-    [orderSide]
+    [orderSide, orderDraft]
   )
   useHotkeys(
     's',
@@ -952,14 +1109,14 @@ export function TrainingPane(): React.JSX.Element {
       e.preventDefault()
       beginOrder('sell')
     },
-    [orderSide]
+    [orderSide, orderDraft]
   )
   // C = 平仓：单击按「开仓顺序」平掉最早的一笔，快速连按两次 = 全部平仓
   useHotkeys(
     'c',
     (e) => {
       e.preventDefault()
-      if (orderSide) return
+      if (orderSide || orderDraft) return
       if (positions.length === 0) return
 
       const now = Date.now()
@@ -970,7 +1127,7 @@ export function TrainingPane(): React.JSX.Element {
       if (doubled) closeAllPositions('manual')
       else closeOldestPosition('manual')
     },
-    [positions.length, orderSide, closeAllPositions, closeOldestPosition]
+    [positions.length, orderSide, orderDraft, closeAllPositions, closeOldestPosition]
   )
 
   /** 手数步进：默认 0.01，按住 Shift 走 0.1 */
@@ -992,7 +1149,7 @@ export function TrainingPane(): React.JSX.Element {
       const el = e.target as HTMLElement | null
       if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return
       // 备注浮窗开着时不切周期
-      if (orderSide) return
+      if (orderSide || orderDraft) return
       if (!activeSession || toolbarTfs.length < 2) return
       e.preventDefault()
       const idx = toolbarTfs.indexOf(timeframe)
@@ -1006,7 +1163,7 @@ export function TrainingPane(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [activeSession, toolbarTfs, timeframe, setTimeframe, orderSide])
+  }, [activeSession, toolbarTfs, timeframe, setTimeframe, orderSide, orderDraft])
 
   // 待删除的会话（用于确认浮窗）
   const pendingDelete =
@@ -1730,6 +1887,15 @@ export function TrainingPane(): React.JSX.Element {
                   focusedTrade={focusedTrade}
                   focusSeq={focusSeq}
                   onClearFocus={() => setFocusedTrade(null)}
+                  pendingOrder={pendingView}
+                  onPendingSlChange={(price) => setPendingRisk('sl', price)}
+                  onPendingTpChange={(price) => setPendingRisk('tp', price)}
+                  onPendingConfirm={() => {
+                    // 票面上的「确认」只是把这张单子交给备注浮窗，
+                    // 真正的成交发生在浮窗里点「确认下单」的那一刻
+                    if (orderDraft) setOrderSide(orderDraft.side)
+                  }}
+                  onPendingCancel={() => setOrderDraft(null)}
                 />
               )}
             </div>
@@ -2606,7 +2772,12 @@ export function TrainingPane(): React.JSX.Element {
                 lot: lot.toFixed(2)
               })}{' '}
               <span className="font-mono">
-                {currentBar ? formatPrice(currentBar.close, priceDigits) : '--'}
+                {/* 显示图上那张待确认单定的价：浮窗里写的价必须和用户看到的线一致 */}
+                {orderDraft
+                  ? formatPrice(orderDraft.entry, priceDigits)
+                  : currentBar
+                    ? formatPrice(currentBar.close, priceDigits)
+                    : '--'}
               </span>
             </p>
             <textarea

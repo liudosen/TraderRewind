@@ -27,6 +27,13 @@ export const zh = {
   'chart.entryLineTitle': '开',
   'chart.exitLineTitle': '关',
 
+  // ── 待确认下单票面 ────────────────────────────────
+  'chart.pendingConfirm': '确认',
+  'chart.pendingConfirmHint': '确认这笔订单（接着填备注和标签）；也可以直接再按一次 {key}',
+  'chart.pendingCancelHint': '不下这笔（Esc 同效）',
+  'chart.pendingLot': '{side} {lot} 手',
+  'chart.pendingNoSl': '未设止损',
+
   // ── 坐标轴刻度 ─────────────────────────────────────
   'chart.axisMonth': '{m}月',
   'chart.axisDay': '{d}日',
@@ -91,6 +98,12 @@ export const en: Record<keyof typeof zh, string> = {
   'chart.sideDown': 'down',
   'chart.entryLineTitle': 'Entry',
   'chart.exitLineTitle': 'Exit',
+
+  'chart.pendingConfirm': 'Confirm',
+  'chart.pendingConfirmHint': 'Confirm this order (note and tags come next); or just press {key} again',
+  'chart.pendingCancelHint': 'Skip this order (Esc does the same)',
+  'chart.pendingLot': '{side} {lot} lots',
+  'chart.pendingNoSl': 'No SL',
 
   'chart.axisMonth': '{m}',
   'chart.axisDay': '{d}',

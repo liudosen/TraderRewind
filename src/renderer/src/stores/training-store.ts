@@ -412,7 +412,21 @@ interface TrainingState {
 
   setLot: (lot: number) => void
   /** 开仓：不再限制「已有持仓」，同向加仓、反向对冲都允许 */
-  openPosition: (side: Side, note?: string, tags?: string[]) => void
+  openPosition: (
+    side: Side,
+    note?: string,
+    tags?: string[],
+    draft?: {
+      /** 成交价：图上那条待确认线定下的价格（含滑点），不传就按当前 K 线现算 */
+      entry?: number
+      /** 开仓时间：按下 B 的那一刻，跟着 draft.entry 一起传 */
+      entryTime?: number
+      sl?: number | null
+      tp?: number | null
+      /** 手数：确认时可能已经用 ↑/↓ 调过，不能用 store 里那个旧值 */
+      lot?: number
+    }
+  ) => void
   /** 平掉指定的一笔持仓 */
   closePosition: (
     positionId: string,
@@ -1517,7 +1531,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     set({ lot: Math.round(clamped * 100) / 100 })
   },
 
-  openPosition: (side, note, tags) => {
+  openPosition: (side, note, tags, draft) => {
     const { bars, cursor, lot, symbol, digits, executionCost, crossRate } = get()
     if (!symbol || bars.length === 0) return
     /**
@@ -1527,13 +1541,19 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     const bar = get().partialBar ?? bars[cursor]
     if (!bar) return
     // 成交时间跟着已揭示的分钟走，成交价才和它自洽
-    const entryTime = get().cursorTime || bar.time
+    const entryTime = draft?.entryTime ?? (get().cursorTime || bar.time)
     // 交易时段外严禁开仓（平仓走 closePosition，不受限制）
     if (tradeWindowBlockAt(entryTime)) return
 
+    /**
+     * 走「图上待确认单」这条路时，成交价和手数都由那张单子定好了：
+     * 用户在图上看到哪条线、拖到哪个位置，成交就该是哪个价 ——
+     * 确认的那一刻再按当前 K 线重算，线会跳，等于把用户拖的东西作废。
+     */
+    const useLot = draft?.lot != null ? Number(draft.lot.toFixed(2)) : lot
     const contractSize = getContractSize(symbol)
     const slip = slippagePrice(executionCost, digits)
-    const fill = side === 'buy' ? bar.close + slip : bar.close - slip
+    const fill = draft?.entry ?? (side === 'buy' ? bar.close + slip : bar.close - slip)
     const entry = Number(fill.toFixed(digits))
     /**
      * 开仓佣金先记在持仓上，等平仓时和价差盈亏一起结算。
@@ -1545,18 +1565,19 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
      * 交叉盘再叠一层「本机美元直盘」的真实汇率（crossRate）。
      */
     const entryRate = quoteUsdRate(symbol, entry, { quoteToUsd: crossRateAt(crossRate, entryTime) }).rate
-    const commission = commissionPerSide(executionCost, lot, contractSize, entry, entryRate)
+    const commission = commissionPerSide(executionCost, useLot, contractSize, entry, entryRate)
 
     const next: Position = {
       id: `pos_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       side,
       symbol,
-      lot,
+      lot: useLot,
       entryPrice: entry,
       entryTime,
-      // 开仓时只给一条线，由用户第一次拖动的方向决定它是止损还是止盈
-      sl: null,
-      tp: null,
+      // 图上待确认单里已经拖好的止损止盈直接带上；没设就是 null，
+      // 开仓后仍然可以像以前那样从开仓线拖出来。
+      sl: draft?.sl ?? null,
+      tp: draft?.tp ?? null,
       digits,
       contractSize,
       entryCommission: commission,

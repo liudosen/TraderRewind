@@ -184,25 +184,39 @@ toggled.
 
 **Placing orders**
 
-- Buy / sell buttons fill at the current bar's close
-- Lot size steps by 0.01; hold `Shift` to step by 0.1
+- Press `B` / `S` (or click buy / sell): a **pending order line** appears on the chart right
+  away — nothing is filled yet, so you can still back out
+- The line carries a ticket, left to right: `side + lots`, `money at the current stop`,
+  `confirm`, `✕`
+  - The money uses the same maths as a real fill (entry/exit commission and slippage
+    included), so what the ticket says is exactly what the stop label will say afterwards
+- Lot size steps by 0.01 (`↑` / `↓`, the ticket updates live); hold `Shift` to step by 0.1
+- Click `✕` or press `Esc` to drop the order — nothing is left on the chart
+- Click "confirm" to open the note popup; only after filling it in (or skipping) is the order
+  actually filled. **The fill price is the price on that line**, it does not drift while you type
+- Keyboard only works too: **three presses of `B` (or `S`) make a complete order** —
+  the first shows the line, the second confirms and opens the note, the third skips the note
+  and fills
 - Close manually, or "close all" to flatten every position at once
 
 **Entry notes**
 
-Clicking buy or sell opens a note popup where you record your reasoning and attach tags
+The note popup appears after you confirm, where you record your reasoning and attach tags
 (left/mid/left, left/mid/right, right/mid/left, right/mid/right, ranging, weak trend, strong
 trend, very strong trend — tags are configurable).
 
-In a hurry, hit "skip and place order", or just press `B` / `S` again — the note box never
-steals focus.
+In a hurry, hit "skip and place order", or press `B` / `S` again inside the popup — the note
+box never steals focus.
 
 Notes and tags are written into the trade record, so later you can see *why* you took it.
 
 **Draggable stop-loss and take-profit**
 
-After entry an entry line (grey) appears on the chart. Drag it up or down and it splits into a
-stop-loss line and a take-profit line:
+The pending line is draggable from the moment it appears: drag down for a stop, up for a take
+profit — the amount on the ticket recalculates live, so you see your worst case *before* you
+commit.
+
+After the fill it is the same entry line:
 
 - Drag up = take profit, drag down = stop loss
 - For longs it is constrained to the correct side of the entry price — dragging the wrong way
