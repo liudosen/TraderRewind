@@ -41,9 +41,11 @@ import {
   MAX_TRADE_TAGS,
   MAX_TRADE_TAG_LEN,
   revealIndexOf,
+  type ClosedTrade,
   type Position
 } from '../../stores/training-store'
 import { ReplayChart, type PendingOrderView } from '../chart/ReplayChart'
+import { TradeMetaDialog } from './TradeMetaDialog'
 import { useTrainingClock } from '../../hooks/use-training-clock'
 import { DateRangePicker } from '../common/DateRangePicker'
 import { TagFilter, useTagFilter } from '../common/TagFilter'
@@ -294,6 +296,14 @@ export function TrainingPane(): React.JSX.Element {
 
   /** 平仓记录的标签筛选：只影响下方列表，不动图表定位与余额 */
   const tradeTags = useTagFilter(closedTrades)
+
+  /**
+   * 正在编辑备注/标签的那一笔已平仓交易。
+   *
+   * 只改 note 与 tags —— 价格和盈亏是回放当场算出来的，事后一律不动，
+   * 否则「这笔单当时赚了多少」就跟着备注一起被改写了，复盘失去意义。
+   */
+  const [editingTrade, setEditingTrade] = useState<ClosedTrade | null>(null)
 
   const [dialogOpen, setDialogOpen] = useState(false)
   /** 待确认删除的会话 id（点击一次垃圾桶就弹确认浮窗） */
@@ -2533,7 +2543,7 @@ export function TrainingPane(): React.JSX.Element {
                 {t('training.noTradesWithTag', { tag: tradeTags.label })}
               </div>
             ) : (
-              <table className="w-full min-w-[540px] text-left">
+              <table className="w-full min-w-[580px] text-left">
                 <thead>
                   <tr className="text-[10.5px] uppercase tracking-wider text-[var(--text-faint)]">
                     <th className="px-3 py-1.5 font-medium">{t('training.col.openTime')}</th>
@@ -2544,6 +2554,9 @@ export function TrainingPane(): React.JSX.Element {
                     <th className="px-3 py-1.5 font-medium">{t('training.col.reason')}</th>
                     <th className="px-3 py-1.5 font-medium">{t('training.col.tags')}</th>
                     <th className="px-3 py-1.5 text-right font-medium">{t('training.col.pnl')}</th>
+                    <th className="w-[40px] py-1.5 pl-1 pr-2.5 font-medium">
+                      <span className="sr-only">{t('training.col.actions')}</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2641,6 +2654,28 @@ export function TrainingPane(): React.JSX.Element {
                       >
                         {formatSigned(trade.pnl)}
                       </td>
+                      {/* 编辑备注 / 标签：常显而不是悬停才浮出来 —— 悬停提示等于没提示，
+                          找不到的按钮就是没有的按钮。stopPropagation 是因为整行点了会去图上定位 */}
+                      <td className="py-1.5 pl-1 pr-2.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setEditingTrade(trade)
+                          }}
+                          title={t('training.editTradeHint')}
+                          aria-label={t('training.editTrade')}
+                          className={clsx(
+                            'rounded p-1 transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--c-accent)]',
+                            // 已经写过备注的那几笔点亮，扫一眼就知道哪些还没补思路
+                            trade.note
+                              ? 'text-[var(--c-accent)]'
+                              : 'text-[var(--text-muted)]'
+                          )}
+                        >
+                          <PenLine size={13} />
+                        </button>
+                      </td>
                     </tr>
                     )
                   })}
@@ -2665,6 +2700,21 @@ export function TrainingPane(): React.JSX.Element {
             {error && <p className="mt-3 text-[11.5px] text-[var(--c-neg)]">{error}</p>}
           </div>
         </div>
+      )}
+
+      {/* 编辑某笔已平仓交易的思路 / 标签：与日志页复用同一个对话框，
+          保存走 patchTradeMeta，成功后会一起更新 store 里的 closedTrades */}
+      {editingTrade && (
+        <TradeMetaDialog
+          trade={editingTrade}
+          tz={activeSession?.tz ?? timezone}
+          onClose={() => setEditingTrade(null)}
+          onSave={async (note, tags) => {
+            const sid = activeSession?.id
+            if (sid == null) return false
+            return useTrainingStore.getState().patchTradeMeta(sid, editingTrade.id, { note, tags })
+          }}
+        />
       )}
 
       {confirmReset && (

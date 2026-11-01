@@ -136,6 +136,9 @@ export const zh = {
   'training.col.reason': '原因',
   'training.col.tags': '标签',
   'training.col.pnl': '盈亏',
+  'training.col.actions': '操作',
+  'training.editTrade': '编辑备注与标签',
+  'training.editTradeHint': '事后补写这笔单的思路、调整标签（价格为回放当场算出，不会改）',
   'training.rowFocusedHint': '已在图上定位该笔成交 · 再点一次可重新居中',
   'training.rowFocusHint': '点击在 K 线图上定位该笔成交',
   'training.focusFuture':
@@ -343,6 +346,10 @@ export const en: Record<keyof typeof zh, string> = {
   'training.col.reason': 'Reason',
   'training.col.tags': 'Tags',
   'training.col.pnl': 'P&L',
+  'training.col.actions': 'Edit',
+  'training.editTrade': 'Edit note and tags',
+  'training.editTradeHint':
+    'Add the reasoning behind this trade afterwards, or adjust its tags (prices are computed at replay time and never change)',
   'training.rowFocusedHint': 'Located on the chart · click again to re-centre',
   'training.rowFocusHint': 'Click to locate this trade on the chart',
   'training.focusFuture':

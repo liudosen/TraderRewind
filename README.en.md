@@ -263,6 +263,11 @@ Cumulative R in close order — the quickest way to see "I gave back everything 
 Each row carries open / close time, direction, size, entry, exit, R, close reason
 (manual / stop / target), tags, P&L and notes.
 
+**Going back to write the note**: the closed-trades table under the chart has a pencil button at
+the far right of every row — it reopens the note and tag editor for that trade. Only the note and
+tags change; prices and P&L were computed at replay time and are never rewritten. Rows that
+already have a note show a lit pencil, so you can see at a glance what is still unreviewed.
+
 **Click any trade and the chart jumps to that bar, drawing the entry and exit lines** — the
 single most-used action in review, because that's where you see what actually went wrong.
 
