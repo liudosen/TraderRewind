@@ -42,6 +42,7 @@ import {
 import {
   fmtTradeWindow,
   inTradeWindow,
+  nextTradeWindowStart,
   normalizeTradeWindow,
   type TradeWindow
 } from '@shared/types/trade-window'
@@ -143,8 +144,22 @@ export interface ClosedTrade {
   closeLocal?: string | null
 }
 
-/** 解析 tags_json：数组或逗号分隔都能认，脏数据一律丢掉 */
-export function parseTags(json: string | null | undefined): string[] {
+/**
+ * 「跳到下一个交易时段」的结论。
+ * 界面拿它翻译成一句人话，`ok` 表示真跳了。
+ */
+export type SkipTradeWindowResult =
+  | 'ok'
+  /** 这个会话没设交易时段 */
+  | 'no-window'
+  /** 当前就在时段内，没有什么可跳的 */
+  | 'in-window'
+  /** 手上还有持仓：跳过的时间不会判止损，先平掉 */
+  | 'has-positions'
+  /** 后面没有落在时段内的 K 线了 */
+  | 'no-data'
+
+/** 解析 tags_json：数组或逗号分隔都能认，脏数据一律丢掉 */export function parseTags(json: string | null | undefined): string[] {
   if (!json) return []
   try {
     const raw = JSON.parse(json)
@@ -378,6 +393,11 @@ interface TrainingState {
   setBarsPerSec: (n: number) => void
   advance: () => void
   markCompleted: () => void
+  /**
+   * 跳到下一个交易时段的开门那根 K 线（只在「当前不在时段内」时有效）。
+   * 没设交易时段的会话永远返回 `no-window`，也就是功能不生效。
+   */
+  skipToNextTradeWindow: () => SkipTradeWindowResult
   /** 重置：回到回测起点 + 清空全部订单 + 余额复位 */
   resetSession: () => Promise<void>
 
@@ -1280,6 +1300,49 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     }
 
     get().persistSoon()
+  },
+
+  skipToNextTradeWindow: () => {
+    const { bars, cursor, cursorTime, timeframe, rawBars, positions, completedAt } = get()
+    const w = activeTradeWindow()
+    // 没设时段 = 全天都能做单，没有「下一个时段」这回事，快捷键就当没按
+    if (!w) return 'no-window'
+    if (bars.length === 0) return 'no-data'
+
+    const tz = useTimezoneStore.getState().effective
+    const now = cursorTime || bars[cursor]?.time || 0
+    if (inTradeWindow(now, tz, w)) return 'in-window'
+
+    /**
+     * 跳过的那段 K 线不会逐根判止损止盈 —— 那正是 advance 每根都要做的事。
+     * 带着仓位跳过去，等于把这段时间里「其实已经打掉」的止损藏了起来，
+     * 账面盈亏就成了假的。所以有仓先平，宁可不跳也不偷偷放水。
+     */
+    if (positions.length > 0) return 'has-positions'
+
+    const target = nextTradeWindowStart(now, tz, w)
+    if (target == null) return 'no-data'
+
+    /**
+     * 落点必须是「时段内」的那一根。数据有缺口时（周末、断档），target 之后的
+     * 第一根可能已经是收盘之后了，继续往后找到下一根真正在时段内为止。
+     */
+    let idx = firstIndexAtOrAfter(bars, target)
+    while (idx < bars.length && !inTradeWindow(bars[idx].time, tz, w)) idx++
+    if (idx >= bars.length || idx <= cursor) return 'no-data'
+
+    const bar = bars[idx]
+    const nextTime = bucketEndTime(bar.time, timeframe, rawBars)
+    set({
+      playing: false,
+      cursor: idx,
+      cursorTime: nextTime,
+      partialBar: partialAt(rawBars, timeframe, bar, nextTime),
+      focusNote: null
+    })
+    if (completedAt == null && idx >= bars.length - 1) get().markCompleted()
+    get().persistSoon()
+    return 'ok'
   },
 
   /** 重置：回到回测起点 + 清空全部订单 + 余额复位，然后从头重新打这个回测集 */

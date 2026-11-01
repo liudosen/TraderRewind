@@ -234,6 +234,7 @@ export function TrainingPane(): React.JSX.Element {
   const togglePlay = useTrainingStore((s) => s.togglePlay)
   const setBarsPerSec = useTrainingStore((s) => s.setBarsPerSec)
   const advance = useTrainingStore((s) => s.advance)
+  const skipToNextTradeWindow = useTrainingStore((s) => s.skipToNextTradeWindow)
   const setLot = useTrainingStore((s) => s.setLot)
   const openPosition = useTrainingStore((s) => s.openPosition)
   const closePosition = useTrainingStore((s) => s.closePosition)
@@ -559,6 +560,29 @@ export function TrainingPane(): React.JSX.Element {
     noticeTimer.current = window.setTimeout(() => setNotice(null), 2800)
   }
   useEffect(() => () => { if (noticeTimer.current) window.clearTimeout(noticeTimer.current) }, [])
+
+  /**
+   * 跳到下一个交易时段。
+   *
+   * 只有「设了交易时段」且「当前不在时段内」才真的跳；其余情况 store 会把原因
+   * 返回回来，这里翻译成一句话弹出去 —— 按了没反应是最难排查的交互。
+   */
+  const jumpToNextWindow = (): void => {
+    if (!activeSession) return
+    const r = skipToNextTradeWindow()
+    if (r === 'ok') return
+    flash(
+      t(
+        r === 'no-window'
+          ? 'training.skipNoWindow'
+          : r === 'in-window'
+            ? 'training.skipInWindow'
+            : r === 'has-positions'
+              ? 'training.skipHasPositions'
+              : 'training.skipNoData'
+      )
+    )
+  }
   const tagInputRef = useRef<HTMLInputElement>(null)
   const autoReportRef = useRef<number | null>(null)
 
@@ -1102,6 +1126,18 @@ export function TrainingPane(): React.JSX.Element {
     },
     [activeSession, advance, orderSide, orderDraft]
   )
+  // T = 跳到下一个交易时段。只在「当前不在时段内」时生效；
+  // 没设交易时段的会话按了不生效（只弹一句为什么）。
+  useHotkeys(
+    't',
+    (e) => {
+      e.preventDefault()
+      if (orderSide || orderDraft) return
+      jumpToNextWindow()
+    },
+    [orderSide, orderDraft, jumpToNextWindow]
+  )
+
   // B / S / C 开平仓快捷键
   // 弹窗打开时会再把焦点交还给页面（不自动聚焦备注框），所以这里始终能收到按键：
   // 连按两次 B = 跳过备注直接下单。
@@ -2145,10 +2181,14 @@ export function TrainingPane(): React.JSX.Element {
                       ? 'border-[var(--border-subtle)] bg-[var(--surface-2)]'
                       : 'border-[var(--c-neg)]/45 bg-[var(--c-neg-tint)]'
                   )}
-                  title={t('training.tradeWindowHint', {
-                    window: translateLabel(locale, fmtTradeWindow(tradeWindow)),
-                    tz: timezone
-                  })}
+                  title={
+                    inWindowNow
+                      ? t('training.tradeWindowHint', {
+                          window: translateLabel(locale, fmtTradeWindow(tradeWindow)),
+                          tz: timezone
+                        })
+                      : `${t('training.windowClosed')} · ${t('training.skipToNextWindowHint')}`
+                  }
                 >
                   <span className="flex items-center gap-1.5 text-[11px] font-medium leading-tight text-[var(--text-primary)]">
                     <span
@@ -2161,14 +2201,26 @@ export function TrainingPane(): React.JSX.Element {
                       window: translateLabel(locale, fmtTradeWindow(tradeWindow))
                     })}
                   </span>
-                  <span
-                    className={clsx(
-                      'text-[9.5px] leading-tight',
-                      inWindowNow ? 'text-[var(--text-faint)]' : 'text-[var(--c-neg)]'
-                    )}
-                  >
-                    {inWindowNow ? t('training.windowOpen') : t('training.windowClosed')}
-                  </span>
+                  {inWindowNow ? (
+                    <span className="text-[9.5px] leading-tight text-[var(--text-faint)]">
+                      {t('training.windowOpen')}
+                    </span>
+                  ) : (
+                    /* 收盘时这一行直接变成「跳到下一时段」的按钮 —— 快捷方式得看得见才会用，
+                       只写在文档里等于没有。红点 + 卡片底色已经说明「现在收盘了」。 */
+                    <button
+                      type="button"
+                      onClick={jumpToNextWindow}
+                      title={t('training.skipToNextWindowHint')}
+                      className="flex items-center gap-1 self-start text-[9.5px] leading-tight text-[var(--c-neg)] transition-opacity hover:opacity-75"
+                    >
+                      <ChevronsRight size={10} />
+                      {t('training.skipToNextWindow')}
+                      <kbd className="rounded-[2px] border border-current px-[3px] font-mono text-[9px] leading-[1.35]">
+                        T
+                      </kbd>
+                    </button>
+                  )}
                 </div>
               )}
 

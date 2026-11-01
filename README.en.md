@@ -225,6 +225,19 @@ After the fill it is the same entry line:
   bounces back
 - The label shows the distance from entry in points while you drag
 
+**Skipping to the next session**
+
+If the session has a trade window, you don't have to step through the closed hours bar by bar —
+press `T` (or click **Next session** on the trade-window card in the toolbar) and the replay lands
+on the first bar of the next session, jumping the whole quiet stretch in one go.
+
+- Only works **outside** the window; inside it you just get "you are already inside"
+- **Blocked while positions are open**: skipped bars never get their stop/target checks, so flying
+  over them with a live position would hide stops that had actually been hit and make the P&L a
+  lie. Close first, then skip
+- Sessions without a trade window (all-day) have no "next session", so the shortcut does nothing
+  there beyond a short explanation
+
 **Automatic exit detection**
 
 As the replay advances, touching the stop or target fills immediately.
@@ -443,6 +456,7 @@ touch your market database.
 | `S` | Sell |
 | `C` | Close one position in order (press twice quickly to close all) |
 | `↑` / `↓` | Lot size ±0.01 (hold `Shift` for ±0.1) |
+| `T` | Skip to the next trade session (only outside the window, and only if the session has one) |
 | `Delete` | Delete the selected drawing |
 | `Esc` | Cancel the current drawing / close a dialog |
 

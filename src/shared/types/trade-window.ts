@@ -104,3 +104,44 @@ export function tradeWindowMinutes(w: TradeWindow): number {
   const b = hmToMinutes(w.to)
   return b > a ? b - a : 24 * 60 - a + b
 }
+
+/**
+ * 下一个交易时段的**开门时刻**（UTC 秒，与 bar.time 同轴）。
+ *
+ * 只在「当前不在时段内」时有意义 —— 已经开着盘就没什么可跳的，返回 null。
+ * 同样返回 null 的还有：没设时段、输入不合法。
+ *
+ * 算法是先按时钟直接算，再用 inTradeWindow 复核：夏令时切换那天「今天 + N 分钟」
+ * 未必还落在预期的钟点上，复核不过就退化成逐分钟探测（最多两天，足够跨过一个
+ * 周末）。这样既不用每次都扫几千次，也不会在时区边界上给出错误答案。
+ */
+export function nextTradeWindowStart(
+  sec: number,
+  tz: unknown,
+  w: TradeWindow | null
+): number | null {
+  const n = normalizeTradeWindow(w)
+  if (!n || !Number.isFinite(sec)) return null
+  if (inTradeWindow(sec, tz, n)) return null
+
+  const t = tzPartsFromSec(sec, tz)
+  const mins = t.hour * 60 + t.minute
+  const a = hmToMinutes(n.from)
+
+  /**
+   * 落在关盘区间里，离下一次开门还有几分钟。
+   * 三种情形刚好覆盖完：跨零点时段永远在「今天开门之前」；
+   * 同日时段则要分清是「今天还没开」还是「今天已经收了」。
+   */
+  const waitMin = isOvernight(n) ? a - mins : mins < a ? a - mins : 24 * 60 - mins + a
+
+  const base = Math.floor(sec / 60) * 60
+  const guess = base + waitMin * 60
+  if (inTradeWindow(guess, tz, n)) return guess
+
+  for (let i = 1; i <= 2 * 24 * 60; i++) {
+    const probe = base + i * 60
+    if (inTradeWindow(probe, tz, n)) return probe
+  }
+  return null
+}
