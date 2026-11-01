@@ -6,7 +6,7 @@ import React, {
   useRef,
   useState
 } from 'react'
-import { Check, X } from 'lucide-react'
+import { Check, ChevronsUpDown, X } from 'lucide-react'
 import {
   createChart,
   CandlestickSeries,
@@ -765,12 +765,15 @@ function PendingTicket({
       className="absolute z-30 flex -translate-y-1/2 items-center gap-1.5"
       style={{ left: 8, top: y }}
     >
-      {/* 左框：方向 + 手数（手数用等宽字体，扫一眼就能分清 0.10 还是 0.01）
+      {/* 左框：方向 + 手数 + 调手数的提示。
+          手数用等宽字体（扫一眼就能分清 0.10 还是 0.01）；右边的 ⇅ 是**可见的**操作暗示 ——
+          只写 title 悬停提示等于没提示，没人会去悬停一个看起来只是标签的框。
           底色写死实色：`bg-[var(--surface-1)]/97` 这种写法 Tailwind 加了透明度修饰符
           也生成不出合法声明（CSS 变量没法在编译期算 alpha），结果是透明 —— K 线直接从
           框里穿过去，金额根本看不清。 */}
       <span
-        className="inline-flex h-[21px] items-center rounded-[3px] border px-2 text-[11px] font-medium leading-none shadow-[0_1px_5px_rgba(0,0,0,0.7)]"
+        title={t('chart.pendingLotHint')}
+        className="inline-flex h-[21px] cursor-default items-center rounded-[3px] border pl-2 pr-1 text-[11px] font-medium leading-none shadow-[0_1px_5px_rgba(0,0,0,0.7)]"
         style={{
           borderColor: sideColor,
           color: sideColor,
@@ -778,6 +781,13 @@ function PendingTicket({
         }}
       >
         {order.lotText}
+        <span
+          aria-hidden="true"
+          className="ml-1.5 flex h-[21px] items-center gap-0 border-l pl-1 opacity-70"
+          style={{ borderColor: sideColor }}
+        >
+          <ChevronsUpDown size={11} strokeWidth={2.5} />
+        </span>
       </span>
 
       {/* 右框：按当前止损算出来的金额（没设止损时是提示文案，用次级色） */}
@@ -798,15 +808,22 @@ function PendingTicket({
       >
         <Check size={11} strokeWidth={3} />
         {t('chart.pendingConfirm')}
+        {/* 快捷键直接印在按钮上：只写在 title 里等于没有 —— 悬停提示得先知道「这里能悬停」 */}
+        <kbd className="ml-0.5 rounded-[2px] bg-white/25 px-[3px] py-[1px] font-mono text-[10px] font-semibold leading-none">
+          {order.side === 'buy' ? 'B' : 'S'}
+        </kbd>
       </button>
 
       <button
         onClick={onCancel}
         title={t('chart.pendingCancelHint')}
-        className="inline-flex h-[21px] w-[21px] items-center justify-center rounded-[3px] border border-[var(--border-strong)] text-[var(--text-muted)] shadow-[0_1px_5px_rgba(0,0,0,0.7)] transition-colors hover:border-[var(--c-neg)] hover:text-[var(--c-neg)]"
+        className="inline-flex h-[21px] items-center gap-1 rounded-[3px] border border-[var(--border-strong)] pl-1.5 pr-1 text-[var(--text-muted)] shadow-[0_1px_5px_rgba(0,0,0,0.7)] transition-colors hover:border-[var(--c-neg)] hover:text-[var(--c-neg)]"
         style={{ backgroundColor: PANEL_BG }}
       >
         <X size={12} />
+        <kbd className="rounded-[2px] bg-white/15 px-[3px] py-[1px] font-mono text-[10px] font-semibold leading-none">
+          Esc
+        </kbd>
       </button>
     </div>
   )

@@ -186,8 +186,10 @@ toggled.
 
 - Press `B` / `S` (or click buy / sell): a **pending order line** appears on the chart right
   away — nothing is filled yet, so you can still back out
-- The line carries a ticket, left to right: `side + lots`, `money at the current stop`,
-  `confirm`, `✕`
+- The line carries a ticket, left to right: `side + lots ⇅`, `money at the current stop`,
+  `confirm B`, `✕ Esc`
+  - The shortcuts are printed right where they act — `⇅` in the lot box, `B`/`S` on the
+    confirm button, `Esc` on the cross — so nothing has to be discovered by hovering
   - The money uses the same maths as a real fill (entry/exit commission and slippage
     included), so what the ticket says is exactly what the stop label will say afterwards
 - Lot size steps by 0.01 (`↑` / `↓`, the ticket updates live); hold `Shift` to step by 0.1

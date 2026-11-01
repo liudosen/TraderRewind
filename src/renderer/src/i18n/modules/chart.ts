@@ -30,8 +30,9 @@ export const zh = {
   // ── 待确认下单票面 ────────────────────────────────
   'chart.pendingConfirm': '确认',
   'chart.pendingConfirmHint': '确认这笔订单（接着填备注和标签）；也可以直接再按一次 {key}',
-  'chart.pendingCancelHint': '不下这笔（Esc 同效）',
+  'chart.pendingCancelHint': '不下这笔',
   'chart.pendingLot': '{side} {lot} 手',
+  'chart.pendingLotHint': '手数可调：↑ / ↓ 每次 0.01 手，按住 Shift 每次 0.10 手；金额会跟着重算',
   'chart.pendingNoSl': '未设止损',
 
   // ── 坐标轴刻度 ─────────────────────────────────────
@@ -101,8 +102,9 @@ export const en: Record<keyof typeof zh, string> = {
 
   'chart.pendingConfirm': 'Confirm',
   'chart.pendingConfirmHint': 'Confirm this order (note and tags come next); or just press {key} again',
-  'chart.pendingCancelHint': 'Skip this order (Esc does the same)',
+  'chart.pendingCancelHint': 'Skip this order',
   'chart.pendingLot': '{side} {lot} lots',
+  'chart.pendingLotHint': 'Adjustable: ↑ / ↓ steps 0.01 lot, hold Shift for 0.10; the amount recalculates',
   'chart.pendingNoSl': 'No SL',
 
   'chart.axisMonth': '{m}',
