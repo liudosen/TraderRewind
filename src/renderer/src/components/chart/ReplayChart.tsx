@@ -54,6 +54,7 @@ import {
   type ChartMapping,
   type DrawingHit
 } from './drawings'
+import { drawTrades, focusLogicalRange } from './trade-lines'
 import { useChartThemeStore } from '../../stores/chart-theme-store'
 import { useTimezoneStore, currentTimezone } from '../../stores/timezone-store'
 import { tzPartsFromSec } from '@shared/types/timezone'
@@ -158,6 +159,13 @@ interface ReplayChartProps {
   /** 定位序号：同一笔交易被反复点选时用它强制重新定位 */
   focusSeq?: number
   /**
+   * 这笔交易该不该由本图去定位（默认 true）。
+   *
+   * 双周期分屏时只有一个窗口能「跳过去」：两边的 150 根跨度完全不同，
+   * 都设一遍只会互相覆盖。谁被选中谁定位，另一个靠时间范围同步跟过去。
+   */
+  focusTarget?: boolean
+  /**
    * 当前允许显示到哪一根 K 线（含）—— 回放没走完时就是游标那一根。
    *
    * 由上层用 `revealIndexOf(bars, cursor, completedAt)` 算好传进来：
@@ -183,6 +191,11 @@ interface ReplayChartProps {
   onPendingConfirm?: () => void
   /** 点「取消」或按 Esc：这张单子作废 */
   onPendingCancel?: () => void
+  /**
+   * 图表实例就绪 / 销毁时回调。
+   * 双周期窗要跟主图同步时间范围，必须拿得到主图的时间轴 —— 这是唯一出口。
+   */
+  onChartReady?: (chart: IChartApi | null) => void
 }
 
 /**
@@ -505,20 +518,7 @@ function nearestBarTime(list: Bar[], t: number): number | null {
   return t - list[lo].time <= list[hi].time - t ? list[lo].time : list[hi].time
 }
 
-/** 盈利 = 红、亏损 = 绿（跟随全局的国内配色约定） */
-const WIN_COLOR = '#ef4444'
-const LOSS_COLOR = '#22c55e'
-/** 成交端点三角形：半宽 / 高 */
-const TRI_HALF = 5
-const TRI_H = 7.5
-
-/**
- * 点击订单定位时固定显示的 K 线根数。
- *
- * 固定「相对根数」而不是「整段铺满」，好处是每次定位屏幕上的柱宽都一样：
- * 150 根按图表宽度均分，窗口一屏正好铺满，既不挤成一团也不会只占半屏。
- */
-const FOCUS_VISIBLE_BARS = 150
+/** 成交连线与「点订单定位 150 根」都搬去了 ./trade-lines，副周期窗要用同一套 */
 
 /**
  * 价格轴的「指纹」。
@@ -599,32 +599,6 @@ function fmtTickMark(ts: number, type: TickMarkType, t: Translator): string {
 }
 
 /**
- * 在 (x, y) 画一个小实心三角形，dir = -1 朝上、1 朝下。
- * 底边压在价格点上，尖角朝外——这样连线的一端正好落在底边中点。
- * 描一圈深色边，压在 K 线上也能看清。
- */
-function drawTriangle(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  dir: -1 | 1,
-  big = false
-): void {
-  const half = big ? TRI_HALF + 1.5 : TRI_HALF
-  const height = big ? TRI_H + 2 : TRI_H
-  const apexY = y + dir * height
-  ctx.beginPath()
-  ctx.moveTo(x, apexY)
-  ctx.lineTo(x - half, y)
-  ctx.lineTo(x + half, y)
-  ctx.closePath()
-  ctx.fill()
-  ctx.strokeStyle = 'rgba(0,0,0,0.8)'
-  ctx.lineWidth = 1
-  ctx.stroke()
-}
-
-/**
  * 主图（pane 0）在画布坐标系里的纵向范围。
  *
  * 画线绑的是**价格轴**，任何价格都能换算出一个 y —— 而副图（CCI/成交量那些）
@@ -643,68 +617,6 @@ function mainPaneRange(chart: IChartApi, hostRect: DOMRect): { top: number; bott
   return { top: 0, bottom: hostRect.height }
 }
 
-/**
- * 历史成交连线：把每一笔已平仓订单的「开仓价 @ 开仓时间」和「平仓价 @ 平仓时间」
- * 用一条细虚线连起来，一眼就能看出这单走了多远、是赚是亏。
- * 端点用小三角形表示方向：做多开仓朝上、平仓朝下；做空正好相反。
- * 整段超出可视区时由 canvas 自动裁掉。
- */
-function drawTrades(
-  ctx: CanvasRenderingContext2D,
-  trades: ClosedTrade[],
-  map: ChartMapping,
-  view: { width: number; height: number },
-  focusId?: string | null
-): void {
-  if (trades.length === 0) return
-
-  ctx.save()
-  ctx.beginPath()
-  ctx.rect(0, 0, view.width, view.height)
-  ctx.clip()
-
-  const paint = (t: ClosedTrade, focused: boolean): void => {
-    const x1 = map.timeToX(t.entryTime)
-    const y1 = map.priceToY(t.entryPrice)
-    const x2 = map.timeToX(t.exitTime)
-    const y2 = map.priceToY(t.exitPrice)
-    if (x1 == null || y1 == null || x2 == null || y2 == null) return
-    if (x1 < -40 && x2 < -40) return
-    if (x1 > view.width + 40 && x2 > view.width + 40) return
-
-    const color = t.pnl >= 0 ? WIN_COLOR : LOSS_COLOR
-    ctx.strokeStyle = color
-    ctx.fillStyle = color
-
-    // 开仓价 → 平仓价 的连线（被定位的那笔加粗 + 加一层柔光，一眼能挑出来）
-    ctx.globalAlpha = focused ? 1 : 0.9
-    ctx.lineWidth = focused ? 2 : 1
-    ctx.setLineDash(focused ? [6, 3] : [4, 3])
-    if (focused) {
-      ctx.shadowColor = color
-      ctx.shadowBlur = 6
-    }
-    ctx.beginPath()
-    ctx.moveTo(x1, y1)
-    ctx.lineTo(x2, y2)
-    ctx.stroke()
-    ctx.shadowBlur = 0
-    ctx.setLineDash([])
-
-    // 端点：开仓三角指向持仓方向，平仓三角反向（尖角朝下 = 这一单结束了）
-    ctx.globalAlpha = 1
-    const entryUp = t.side === 'buy'
-    drawTriangle(ctx, x1, y1, entryUp ? -1 : 1, focused)
-    drawTriangle(ctx, x2, y2, entryUp ? 1 : -1, focused)
-  }
-
-  // 先画普通成交，最后画被定位的那一笔，保证它在最上层
-  for (const t of trades) if (t.id !== focusId) paint(t, false)
-  const focusedTrade = focusId ? trades.find((t) => t.id === focusId) : undefined
-  if (focusedTrade) paint(focusedTrade, true)
-
-  ctx.restore()
-}
 
 /**
  * 票面底色。必须是不透明的实色：它是浮在 K 线上的，半透明会让影线从字缝里穿过去。
@@ -857,13 +769,15 @@ export function ReplayChart({
   trades,
   focusedTrade,
   focusSeq,
+  focusTarget = true,
   revealIndex,
   onClearFocus,
   pendingOrder,
   onPendingSlChange,
   onPendingTpChange,
   onPendingConfirm,
-  onPendingCancel
+  onPendingCancel,
+  onChartReady
 }: ReplayChartProps): React.JSX.Element {
   const { t, locale } = useT()
   const theme = useChartThemeStore((s) => s.theme)
@@ -878,6 +792,13 @@ export function ReplayChart({
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   /** 同一个 chart 实例的 state 版：图例要订阅十字线，必须能拿到实例并在挂载后重渲染 */
   const [chartApi, setChartApi] = useState<IChartApi | null>(null)
+  /**
+   * 往外递图表实例走 ref。
+   * 建图那个 effect 的依赖是 `[]`，把回调写进依赖会让整张图重建（丢视野、丢画线），
+   * 所以回调变了也只用最新的那个，不重跑 effect。
+   */
+  const onChartReadyRef = useRef(onChartReady)
+  onChartReadyRef.current = onChartReady
 
   // 文本工具输入态
   const [textDraft, setTextDraft] = useState<{
@@ -1455,6 +1376,7 @@ export function ReplayChart({
     chartRef.current = chart
     seriesRef.current = series
     setChartApi(chart)
+    onChartReadyRef.current?.(chart)
 
     if (import.meta.env.DEV) {
       ;(window as any).__rw_chart = { chart, series }
@@ -1525,6 +1447,7 @@ export function ReplayChart({
       chartRef.current = null
       seriesRef.current = null
       setChartApi(null)
+      onChartReadyRef.current?.(null)
       indicatorRefs.current.clear()
       posLinesRef.current.clear()
       riskModeRef.current = null
@@ -2113,61 +2036,38 @@ export function ReplayChart({
       })
     )
 
-    // 定位订单：固定给「左右一共 150 根」，一次设到位。
-    //
-    // 之前是「先整段铺满，如果订单被裁掉再缩过去」。两个毛病：
-    //  1) setVisibleLogicalRange 要等下一帧才真正应用，连设两次会互相覆盖，
-    //     屏幕上先闪一下整段、再跳到订单，看着就是「卡一秒才找准」；
-    //  2) 「整段放得下吗」是按 0.5px 最小柱宽推算的，几千根时几乎总被算成放得下，
-    //     于是压根不缩——点了订单却停在整段，位置还是没对准。
-    // 现在统一成固定窗口：跨度永远 150 根，柱宽由宽度决定，每次定位屏幕都是铺满的。
-    const n = bars.length
-    const idxIn = timeToLogical(focusedTrade.entryTime)
-    const idxOut = timeToLogical(focusedTrade.exitTime)
     /**
-     * 可见上限：回放没走完时就是游标那根（revealIndex）。
+     * 定位订单：固定给「左右一共 150 根」，一次设到位（口径见 ./trade-lines）。
      *
-     * 那张固定 150 根的窗口以前是「以订单为中心」铺开的，订单就在游标上时
-     * 右半边（74 根）直接铺到游标之后——屏幕上一片空白加上价格线，
-     * 用户看到的就是「点了订单能看到未来的 K 线」。定位必须以它封顶。
+     * 以前是「先整段铺满，如果订单被裁掉再缩过去」，有两个毛病：
+     *  1) setVisibleLogicalRange 要等下一帧才真正应用，连设两次会互相覆盖，
+     *     屏幕上先闪一下整段、再跳到订单，看着就是「卡一秒才找准」；
+     *  2) 「整段放得下吗」是按 0.5px 最小柱宽推算的，几千根时几乎总被算成放得下，
+     *     于是压根不缩——点了订单却停在整段，位置还是没对准。
+     * 现在统一成固定窗口：跨度永远 150 根，柱宽由宽度决定，每次定位屏幕都是铺满的。
+     *
+     * 双周期开着、而用户选中的是副周期窗时，主图不再抢着定位：两个窗口各自的
+     * 「150 根」跨的时间长度完全不同（M15 是 37 小时、H1 是 6 天），都去设一遍
+     * 就是互相覆盖，最后停在谁那儿全看执行顺序。谁被选中谁定位，另一个跟着同步走。
      */
-    const last = Math.max(0, Math.min(revealIndex ?? n - 1, n - 1))
-    if (idxIn != null && Math.round(idxIn) > last) {
-      // 这笔单在游标之后（或压根不属于这一段），宁可不定位也不许把未来露出来
+    if (!focusTarget) {
       redrawRef.current()
       return
     }
-    // 以开仓那根为锚点；但这笔单子本身不到一屏时，改用「开→平」的中点，
-    // 不然持仓很久的单子只能看到开仓、平仓被挤出屏幕外。
-    let anchor = idxIn
-    if (idxIn != null && idxOut != null && idxOut > idxIn && idxOut - idxIn <= FOCUS_VISIBLE_BARS - 20) {
-      anchor = (idxIn + idxOut) / 2
-    }
-    if (n > 1 && anchor != null) {
-      const half = Math.floor(FOCUS_VISIBLE_BARS / 2)
-      const span = FOCUS_VISIBLE_BARS - 1
-      // 锚点本身也不许越过上限（跨游标持仓取中点时可能出现）
-      const a = Math.min(anchor, last)
-      let from = Math.round(a) - half
-      let to = from + span
-      // 贴着开头：整体右移，跨度不变（否则前几笔只能看到半屏）
-      if (from < 0) {
-        to -= from
-        from = 0
-      }
-      // 贴着「当前可见上限」：整体左移，跨度不变
-      // —— 认的是 last（游标），不是 n-1（整段数据的末尾）
-      if (to > last) {
-        from = Math.max(0, from - (to - last))
-        to = last
-      }
-
+    const range = focusLogicalRange({
+      total: bars.length,
+      // 可见上限：回放没走完时就是游标那根，不许把未来露出来
+      lastRevealed: revealIndex ?? bars.length - 1,
+      idxIn: timeToLogical(focusedTrade.entryTime),
+      idxOut: timeToLogical(focusedTrade.exitTime)
+    })
+    if (range) {
       // 这里故意不盖 autoRangeAtRef 的时间戳：定位之后的这一屏就是用户当下在看的窗口，
       // 让它记进 userWindowRef，接着切周期才会「留在这笔单子附近看」，而不是弹回原处。
-      chart.timeScale().setVisibleLogicalRange({ from, to })
+      chart.timeScale().setVisibleLogicalRange(range)
     }
     redrawRef.current()
-  }, [focusedTrade?.id, focusSeq, bars.length, revealIndex, timeToLogical, t])
+  }, [focusedTrade?.id, focusSeq, bars.length, revealIndex, timeToLogical, t, focusTarget])
 
   // ---------- 交互：画线 + SL/TP 拖拽 ----------
   useEffect(() => {

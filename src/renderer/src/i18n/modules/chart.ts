@@ -70,7 +70,13 @@ export const zh = {
   'chart.hintMulti': '· 共 {n} 笔，拖哪条线就选中哪笔',
   'chart.hintReduce': '· 右键开仓线可减仓',
   /** 止损被拖到成本价的盈利侧时，线标签后面缀的字 */
-  'chart.trailingStop': '移动止盈'
+  'chart.trailingStop': '移动止盈',
+
+  /** 双周期：下方那个独立的小 K 线窗 */
+  'chart.secondaryPane': '副周期',
+  'chart.secondaryTfHint': '切换这个窗口显示的周期',
+  'chart.secondaryClose': '关闭副周期窗口',
+  'chart.secondaryEmpty': '这一段还没有足够的 K 线可聚合'
 }
 
 export const en: Record<keyof typeof zh, string> = {
@@ -139,5 +145,10 @@ export const en: Record<keyof typeof zh, string> = {
   'chart.hintAdjustNote': ' lines up or down · stop past entry = trailing stop',
   'chart.hintMulti': '· {n} positions — drag a line to select it',
   'chart.hintReduce': '· Right-click the entry line to reduce',
-  'chart.trailingStop': 'trailing'
+  'chart.trailingStop': 'trailing',
+
+  'chart.secondaryPane': 'Sub-period',
+  'chart.secondaryTfHint': 'Change the period shown in this pane',
+  'chart.secondaryClose': 'Close sub-period pane',
+  'chart.secondaryEmpty': 'Not enough bars here to aggregate yet'
 }
