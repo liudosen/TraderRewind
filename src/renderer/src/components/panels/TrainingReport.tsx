@@ -231,23 +231,19 @@ export function ReportContent({
               icon={<Target size={14} />}
             />
             {/*
-              主数字是「赢的单子平均赚多少 R」，不是盈利因子。
-              两者常常被混着叫「盈亏比」，但胜率一低，盈利因子会被一堆小亏单压到 1 附近
-              （1.31 那种），和旁边「均盈 / 均亏」的比值对不上，看着就像算错了。
-              盈利因子改放提示里，需要的人悬停就能看到。
+              主数字是「盈亏比」= 均盈 ÷ 均亏，副行把两个平均值按 R 摆出来，
+              一眼能对上算式（1.78 ÷ 0.89 ≈ 2.00）。
+              不放在这里的 1.31 是**盈利因子**（总盈利 ÷ 总亏损），它会被胜率拉低，
+              和盈亏比不是一回事 —— 需要的话悬停能看到。
             */}
             <Metric
-              label={t('report.metric.avgWin')}
-              value={fmtR(stats.avgWinR)}
-              sub={t('report.metric.avgWinSub', {
-                loss: fmtR(-stats.avgLossR),
-                ratio: fmtRatio(stats.payoff)
+              label={t('report.metric.payoff')}
+              value={fmtRatio(stats.payoff)}
+              sub={t('report.metric.payoffSub', {
+                win: fmtR(stats.avgWinR),
+                loss: fmtR(-stats.avgLossR)
               })}
-              title={t('report.metric.avgWinHint', {
-                ratio: fmtRatio(stats.payoff),
-                pf: fmtRatio(stats.profitFactor)
-              })}
-              tone={stats.avgWinR > 0 ? 'pos' : undefined}
+              title={t('report.metric.payoffHint', { pf: fmtRatio(stats.profitFactor) })}
               icon={<Activity size={14} />}
             />
             <Metric

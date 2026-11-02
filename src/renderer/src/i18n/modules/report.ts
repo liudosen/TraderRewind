@@ -73,10 +73,10 @@ export const zh = {
   'report.metric.perTradeSub': '最好 {best} / 最差 {worst}',
   'report.metric.winRate': '胜率',
   'report.metric.winRateSub': '{wins} 胜 / {losses} 负',
-  'report.metric.avgWin': '平均盈利',
-  'report.metric.avgWinSub': '均亏 {loss} · 盈亏比 {ratio}',
-  'report.metric.avgWinHint':
-    '赢的单子平均赚多少 R（已含手续费）。盈亏比 {ratio} = 均盈 ÷ 均亏；盈利因子 {pf} = 总盈利 ÷ 总亏损，会被胜率拉低。',
+  'report.metric.payoff': '盈亏比',
+  'report.metric.payoffSub': '均盈 {win} / 均亏 {loss}',
+  'report.metric.payoffHint':
+    '盈亏比 = 均盈 ÷ 均亏（赢的单子平均赚多少 R ÷ 亏的单子平均亏多少 R）。别和盈利因子 {pf}（总盈利 ÷ 总亏损，会被胜率拉低）混着看。',
   'report.metric.maxDrawdown': '最大回撤',
 
   'report.curve.title': 'R 收益曲线',
@@ -217,10 +217,10 @@ export const en: Record<keyof typeof zh, string> = {
   'report.metric.perTradeSub': 'Best {best} / worst {worst}',
   'report.metric.winRate': 'Win rate',
   'report.metric.winRateSub': '{wins}W / {losses}L',
-  'report.metric.avgWin': 'Avg win',
-  'report.metric.avgWinSub': 'Avg loss {loss} · payoff {ratio}',
-  'report.metric.avgWinHint':
-    'How many R a winning trade makes on average (fees included). Payoff {ratio} = avg win ÷ avg loss; profit factor {pf} = gross win ÷ gross loss, which is dragged down by a low win rate.',
+  'report.metric.payoff': 'Payoff ratio',
+  'report.metric.payoffSub': 'Avg win {win} / avg loss {loss}',
+  'report.metric.payoffHint':
+    'Payoff ratio = avg win ÷ avg loss, both in R. Not the same as profit factor {pf} (gross win ÷ gross loss), which a low win rate drags down.',
   'report.metric.maxDrawdown': 'Max drawdown',
 
   'report.curve.title': 'R equity curve',
