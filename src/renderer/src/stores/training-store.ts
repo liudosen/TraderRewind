@@ -27,6 +27,7 @@ import {
   type IndicatorKind
 } from '@shared/utils/indicators'
 import { useTimezoneStore } from './timezone-store'
+import { useChartThemeStore } from './chart-theme-store'
 import {
   DEFAULT_INDICATOR_PREFS,
   normalizeIndicatorPrefs,
@@ -387,6 +388,8 @@ interface TrainingState {
   deleteSession: (sessionId: number) => Promise<void>
   closeActiveSession: () => void
   setTimeframe: (tf: string) => void
+  /** 按当前的「训练前历史」设置重读 K 线，回放进度原地不动 */
+  reloadHistory: () => Promise<void>
 
   setPlaying: (playing: boolean) => void
   togglePlay: () => void
@@ -509,10 +512,11 @@ function computeInitialCursor(len: number): number {
  * 训练开始前额外读多少「历史参考」K 线（秒）。
  *
  * 不让用户从一片空白开始 —— 打开会话第一眼就得能看见趋势、前高前低、均线走向，
- * 否则完全没法判断这笔单子该不该做。默认两周，按 5 分钟图约 4000 根，足够看。
+ * 否则完全没法判断这笔单子该不该做。
  *
- * 大周期上两周可能只剩几十根（H4 84 根、D1 14 根），所以再按显示周期算一个
- * 「至少这么多根」的下限，取两者里更长的那段。小周期永远是两周。
+ * 从 v0.8.1 起这段时长由设置 → 图表「训练前历史」决定（默认两个月），这里只兜一个
+ * 下限：至少两周，且至少 `WARMUP_MIN_BARS` 根。大周期上两周可能只剩几十根
+ * （H4 84 根、D1 14 根），所以按显示周期再算一个下限，取两者里更长的那段。
  */
 const WARMUP_DAYS = 14
 const WARMUP_MIN_BARS = 120
@@ -520,7 +524,10 @@ const WARMUP_MIN_BARS = 120
 function warmupSeconds(timeframe: string): number {
   const byDays = WARMUP_DAYS * 86400
   const byBars = WARMUP_MIN_BARS * Math.max(0, timeframeSeconds(timeframe))
-  return Math.max(byDays, byBars)
+  const floor = Math.max(byDays, byBars)
+  // 一个月按 30 天算：这里只是「读多长一段数据」，不需要日历精度
+  const months = Math.max(0, Math.floor(useChartThemeStore.getState().theme.historyMonths))
+  return Math.max(floor, months * 30 * 86400)
 }
 
 /**
@@ -992,9 +999,10 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       /**
        * 多读一段起点之前的 K 线当「历史参考」（见 warmupSeconds）。
        *
-       * 这些 K 线只是用来给用户看盘用的：回放游标从会话起点开始，
-       * 预热段永远不会被推进到，也就永远不可能在预热段里下单。
-       * 数据集本身没那么早的数据就少读一点（SQL 按 time 过滤，自然就少了）。
+       * 读多长由设置 → 图表「训练前历史」决定（默认两个月）。这些 K 线只是给用户
+       * 看盘用的：回放游标从会话起点开始，预热段永远不会被推进到，
+       * 也就永远不可能在预热段里下单。数据集本身没那么早的数据就少读一点
+       * （SQL 按 time 过滤，自然就少了）。
        */
       const warmFrom = Math.max(
         dataset.first_time || from,
@@ -1226,6 +1234,49 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       playing
     })
     get().persistState()
+  },
+
+  /**
+   * 按当前的「训练前历史」设置重新读一遍 K 线，回放进度原地不动。
+   *
+   * 设置里把那个月数改小时/改大时调它 —— 否则得关掉会话再打开才生效，
+   * 而关掉会话会把进度落库、视图复位，用户改个数字代价太大。
+   * 只换数据窗口，持仓、画线、已平仓记录全按时间存，一概不动。
+   */
+  reloadHistory: async () => {
+    const st = get()
+    const session = st.activeSession
+    if (!session || st.bars.length === 0) return
+    try {
+      const dataset = await window.api.getDataset(session.dataset_id)
+      if (!dataset) return
+      const tf = get().timeframe
+      const from = session.start_time ?? dataset.first_time
+      const to = session.end_time ?? dataset.last_time
+      const warmFrom = Math.max(dataset.first_time || from, from - warmupSeconds(tf))
+      const range: any = await window.api.getCandlesRange(dataset.id, warmFrom, to)
+      const nextRaw = range?.buffer
+        ? bufferToBars(range.buffer as ArrayBuffer, Number(range.count) || 0)
+        : []
+      if (nextRaw.length === 0) return
+      const nextBars = aggregateBars(nextRaw, tf)
+      // 锚点用「精确回放时间」：数组前缀长度变了，下标必然跟着错位
+      const now = get()
+      const anchor = now.cursorTime || now.bars[now.cursor]?.time || 0
+      const nextCursor = Math.max(0, Math.min(nextBars.length - 1, indexAtTime(nextBars, anchor)))
+      const startFrom = from
+      const nextInitial = Math.max(0, Math.min(nextCursor, firstIndexAtOrAfter(nextBars, startFrom)))
+      set({
+        rawBars: nextRaw,
+        bars: nextBars,
+        cursor: nextCursor,
+        initialCursor: nextInitial,
+        initialTime: nextBars[nextInitial]?.time ?? 0,
+        partialBar: partialAt(nextRaw, tf, nextBars[nextCursor], now.cursorTime)
+      })
+    } catch (e: any) {
+      set({ error: e?.message ?? String(e) })
+    }
   },
 
   setPlaying: (playing) => {

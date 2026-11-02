@@ -39,6 +39,8 @@ import {
   THEME_PRESETS,
   FUTURE_BARS_MIN,
   FUTURE_BARS_MAX,
+  HISTORY_MONTHS_MIN,
+  HISTORY_MONTHS_MAX,
   type CrosshairStyle
 } from '@shared/types/chart-theme'
 
@@ -661,6 +663,40 @@ export function SettingsPanel(): React.JSX.Element {
                 />
                 <span className="text-[10.5px] text-[var(--text-faint)]">
                   {t('settings.chart.futureBarsUnit')}
+                </span>
+              </div>
+            </div>
+            {/* 训练前历史：打开会话时往前多读几个月，左侧能回看趋势结构 */}
+            <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+              <span
+                className="shrink-0 text-[12px] text-[var(--text-secondary)]"
+                title={t('settings.chart.historyMonthsHint')}
+              >
+                {t('settings.chart.historyMonths')}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  value={chartTheme.historyMonths}
+                  min={HISTORY_MONTHS_MIN}
+                  max={HISTORY_MONTHS_MAX}
+                  step={1}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    patchTheme({
+                      historyMonths: Math.min(
+                        HISTORY_MONTHS_MAX,
+                        Math.max(HISTORY_MONTHS_MIN, Math.round(v))
+                      )
+                    })
+                    // 会话正开着就立刻按新窗口重读一遍，否则要关掉会话再打开才生效
+                    void useTrainingStore.getState().reloadHistory()
+                  }}
+                  className="h-6 w-16 rounded border border-[var(--border-subtle)] bg-[var(--surface-2)] px-1.5 text-right font-mono text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--c-accent)]"
+                />
+                <span className="text-[10.5px] text-[var(--text-faint)]">
+                  {t('settings.chart.historyMonthsUnit')}
                 </span>
               </div>
             </div>

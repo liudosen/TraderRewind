@@ -135,6 +135,10 @@ const baseZh = {
   'settings.chart.futureBarsUnit': '根',
   'settings.chart.futureBarsHint':
     '右侧预留多少根「未来」空间。这段里只有时间刻度、没有 K 线，可以把趋势线 / 预测线画到未来；0 = 不允许拖到未来',
+  'settings.chart.historyMonths': '训练前历史',
+  'settings.chart.historyMonthsUnit': '个月',
+  'settings.chart.historyMonthsHint':
+    '打开训练会话时，往前多读几个月 K 线。回放仍然从你设定的开始时间起跑，前面这段只用来回看趋势与前高前低；0 = 只读指标预热需要的那两周',
 
   'settings.about.title': '关于',
   'settings.about.version': '版本',
@@ -487,6 +491,10 @@ const baseEn: Record<keyof typeof baseZh, string> = {
   'settings.chart.futureBarsUnit': 'bars',
   'settings.chart.futureBarsHint':
     'How many bars of empty space to keep on the right. It has time labels but no candles, so you can draw trend or forecast lines into the future; 0 = no scrolling past the last bar',
+  'settings.chart.historyMonths': 'History before the session',
+  'settings.chart.historyMonthsUnit': 'months',
+  'settings.chart.historyMonthsHint':
+    'How many extra months of candles to load before the session start. Playback still begins at the start time you set; the earlier stretch is only there to read trend and prior highs/lows; 0 = just the two weeks of indicator warm-up',
 
   'settings.about.title': 'About',
   'settings.about.version': 'Version',

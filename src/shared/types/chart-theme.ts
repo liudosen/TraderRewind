@@ -37,11 +37,24 @@ export interface ChartTheme {
    * 0 = 不许看到未来时间（旧行为）。
    */
   futureBars: number
+  /**
+   * 训练开始前额外加载多少个月的历史 K 线（左侧能回看多远）。
+   *
+   * 打开会话时会把这几个月的 1 分钟数据一起读进来再按显示周期聚合：用户一上来就能
+   * 往前翻前高前低、趋势结构，指标也有足够长的预热段。这些 K 线只是背景 ——
+   * 回放游标仍然从会话起点开始，前面那截永远不会被推进到，也就不可能在里边下单。
+   * 0 = 只留指标预热要用的那两周（旧行为）。
+   */
+  historyMonths: number
 }
 
 /** 未来空白的允许范围（再多拖起来就飘了） */
 export const FUTURE_BARS_MIN = 0
 export const FUTURE_BARS_MAX = 600
+
+/** 训练前历史的允许范围（月）：再多就是整库扫，打开会话会明显变慢 */
+export const HISTORY_MONTHS_MIN = 0
+export const HISTORY_MONTHS_MAX = 12
 
 /** 默认主题：白涨灰跌 + 无网格（用户调好的这套作为出厂默认） */
 export const DEFAULT_CHART_THEME: ChartTheme = {
@@ -59,7 +72,9 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
   showWick: true,
   showBorder: true,
   axisWeekday: true,
-  futureBars: 60
+  futureBars: 60,
+  // 两个月：够看清趋势位置，又不至于打开会话要等
+  historyMonths: 2
 }
 
 /** 预设配色 */
@@ -125,6 +140,12 @@ export function normalizeTheme(input: unknown): ChartTheme {
   if (typeof raw.axisWeekday === 'boolean') out.axisWeekday = raw.axisWeekday
   if (typeof raw.futureBars === 'number' && Number.isFinite(raw.futureBars)) {
     out.futureBars = Math.min(FUTURE_BARS_MAX, Math.max(FUTURE_BARS_MIN, Math.round(raw.futureBars)))
+  }
+  if (typeof raw.historyMonths === 'number' && Number.isFinite(raw.historyMonths)) {
+    out.historyMonths = Math.min(
+      HISTORY_MONTHS_MAX,
+      Math.max(HISTORY_MONTHS_MIN, Math.round(raw.historyMonths))
+    )
   }
   if (typeof raw.crosshairWidth === 'number' && (raw.crosshairWidth === 1 || raw.crosshairWidth === 2)) {
     out.crosshairWidth = raw.crosshairWidth
