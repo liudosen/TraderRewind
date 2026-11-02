@@ -52,6 +52,15 @@ function fmtR(n: number): string {
   return `${sign}${Math.abs(n).toFixed(2)}R`
 }
 
+/**
+ * 倍数（盈亏比 / 盈利因子）的展示：两位小数，没有亏损单且有盈利时是 ∞。
+ * 0/0 这种「一笔都没做」的情况给 0.00，比冒出个 ∞ 更不容易被误读。
+ */
+function fmtRatio(n: number): string {
+  if (Number.isFinite(n)) return n.toFixed(2)
+  return n > 0 ? '∞' : '0.00'
+}
+
 /** 订单时间 MM-DD HH:mm，按设置时区（默认 UTC+8） */
 function fmtTime(ts: number, tz: string): string {
   const parts = tzPartsFromSec(ts, tz)
@@ -128,6 +137,9 @@ export function ReportContent({
       if (ddR > maxDdR) maxDdR = ddR
     }
 
+    const avgWin = wins.length > 0 ? grossWin / wins.length : 0
+    const avgLoss = losses.length > 0 ? grossLoss / losses.length : 0
+
     return {
       totalPnl,
       commission,
@@ -136,9 +148,18 @@ export function ReportContent({
       wins: wins.length,
       losses: losses.length,
       count: list.length,
-      avgWin: wins.length > 0 ? grossWin / wins.length : 0,
-      avgLoss: losses.length > 0 ? grossLoss / losses.length : 0,
+      avgWin,
+      avgLoss,
+      /**
+       * 盈利因子 = 总盈利 ÷ 总亏损。
+       *
+       * 注意它和「盈亏比」不是一回事：胜率低的时候，哪怕每单赚得比亏得多，
+       * 盈利因子也会被一堆小亏单压到 1 附近甚至以下。所以概览卡上单列的是
+       * 「平均盈利（R）」，盈利因子只在提示里给，两者不要混着看。
+       */
       profitFactor: grossLoss > 0 ? grossWin / grossLoss : wins.length > 0 ? Infinity : 0,
+      /** 盈亏比 = 均盈 ÷ 均亏（每单赚的是每单亏的几倍），没有亏损单时是 ∞ */
+      payoff: avgLoss > 0 ? avgWin / avgLoss : avgWin > 0 ? Infinity : 0,
       maxDrawdown: maxDd,
       maxDdPct: peak > 0 ? (maxDd / peak) * 100 : 0,
       curve,
@@ -148,8 +169,8 @@ export function ReportContent({
       totalR: r,
       maxDdR,
       avgR: list.length > 0 ? r / list.length : 0,
-      avgWinR: wins.length > 0 ? grossWin / wins.length / risk : 0,
-      avgLossR: losses.length > 0 ? grossLoss / losses.length / risk : 0,
+      avgWinR: avgWin / risk,
+      avgLossR: avgLoss / risk,
       bestR: rList.length > 0 ? Math.max(...rList) : 0,
       worstR: rList.length > 0 ? Math.min(...rList) : 0
     }
@@ -209,17 +230,24 @@ export function ReportContent({
               sub={t('report.metric.winRateSub', { wins: stats.wins, losses: stats.losses })}
               icon={<Target size={14} />}
             />
+            {/*
+              主数字是「赢的单子平均赚多少 R」，不是盈利因子。
+              两者常常被混着叫「盈亏比」，但胜率一低，盈利因子会被一堆小亏单压到 1 附近
+              （1.31 那种），和旁边「均盈 / 均亏」的比值对不上，看着就像算错了。
+              盈利因子改放提示里，需要的人悬停就能看到。
+            */}
             <Metric
-              label={t('report.metric.profitFactor')}
-              value={
-                Number.isFinite(stats.profitFactor)
-                  ? stats.profitFactor.toFixed(2)
-                  : '∞'
-              }
-              sub={t('report.metric.profitFactorSub', {
-                win: fmtR(stats.avgWinR),
-                loss: fmtR(-stats.avgLossR)
+              label={t('report.metric.avgWin')}
+              value={fmtR(stats.avgWinR)}
+              sub={t('report.metric.avgWinSub', {
+                loss: fmtR(-stats.avgLossR),
+                ratio: fmtRatio(stats.payoff)
               })}
+              title={t('report.metric.avgWinHint', {
+                ratio: fmtRatio(stats.payoff),
+                pf: fmtRatio(stats.profitFactor)
+              })}
+              tone={stats.avgWinR > 0 ? 'pos' : undefined}
               icon={<Activity size={14} />}
             />
             <Metric
@@ -578,17 +606,23 @@ function Metric({
   label,
   value,
   sub,
+  title,
   tone,
   icon
 }: {
   label: string
   value: string
   sub?: string
+  /** 悬停提示：放不下又不该丢的口径说明（比如盈利因子） */
+  title?: string
   tone?: 'pos' | 'neg'
   icon?: React.ReactNode
 }): React.JSX.Element {
   return (
-    <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-0)] px-2.5 py-2">
+    <div
+      title={title}
+      className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-0)] px-2.5 py-2"
+    >
       <div className="flex items-center gap-1 text-[10.5px] text-[var(--text-faint)]">
         {icon}
         {label}
