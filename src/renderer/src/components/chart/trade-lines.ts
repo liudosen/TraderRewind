@@ -61,7 +61,15 @@ export function drawTrades(
   trades: ClosedTrade[],
   map: ChartMapping,
   view: Viewport,
-  focusId?: string | null
+  focusId?: string | null,
+  /**
+   * 当前可见的时间窗（含一点余量）。
+   *
+   * 一场训练攒下几百笔成交之后，每帧都给每一笔算 4 次坐标换算太浪费 ——
+   * 绝大多数成交早就不在屏幕上了。传进来就先用纯数字比较筛一遍，
+   * 不传就保持原来的行为（全画，靠 canvas 自己裁）。
+   */
+  win?: { lo: number; hi: number } | null
 ): void {
   if (trades.length === 0) return
 
@@ -71,6 +79,11 @@ export function drawTrades(
   ctx.clip()
 
   const paint = (t: ClosedTrade, focused: boolean): void => {
+    if (win) {
+      const lo = Math.min(t.entryTime, t.exitTime)
+      const hi = Math.max(t.entryTime, t.exitTime)
+      if (hi < win.lo || lo > win.hi) return
+    }
     const x1 = map.timeToX(t.entryTime)
     const y1 = map.priceToY(t.entryPrice)
     const x2 = map.timeToX(t.exitTime)

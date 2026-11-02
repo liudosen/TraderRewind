@@ -19,6 +19,8 @@ export interface Viewport {
 
 const HANDLE_R = 3.5
 const HIT_TOLERANCE = 6
+/** 横向裁剪留的边距：手柄半径 + 文字高度的一点余量 */
+const CULL_MARGIN = 24
 
 /** 文字绘制的字号，编辑框与命中盒都按它换算 */
 export const TEXT_FONT_PX = 11.5
@@ -39,12 +41,29 @@ export function estimateTextWidth(text: string): number {
   return w
 }
 
+/**
+ * 颜色 → rgba 字符串缓存。
+ *
+ * 每次重绘每个图形都要拼一次颜色串（上百条画线 × 每帧），而颜色一共就那么几个 ——
+ * parseInt 三次 + 模板串的分配在这儿纯属浪费，还会给 GC 添压力。
+ */
+const rgbaCache = new Map<string, string>()
+
 function hexToRgba(hex: string, alpha: number): string {
+  const key = `${hex}|${alpha}`
+  const hit = rgbaCache.get(key)
+  if (hit !== undefined) return hit
   const h = hex.replace('#', '')
-  const r = parseInt(h.slice(0, 2), 16)
-  const g = parseInt(h.slice(2, 4), 16)
-  const b = parseInt(h.slice(4, 6), 16)
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  let out = hex
+  if (/^[0-9a-f]{6}$/i.test(h)) {
+    const r = parseInt(h.slice(0, 2), 16)
+    const g = parseInt(h.slice(2, 4), 16)
+    const b = parseInt(h.slice(4, 6), 16)
+    out = `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+  // 上限兜一下：正常会话里颜色种类是个位数，只有用户疯狂改色才会长到几百
+  if (rgbaCache.size < 512) rgbaCache.set(key, out)
+  return out
 }
 
 function isNum(v: number | null): v is number {
@@ -68,6 +87,45 @@ export function shapePoints(d: Drawing): DrawingPoint[] {
   return d.type === 'polyline' ? polyPoints(d) : d.p2 ? [d.p1, d.p2] : [d.p1]
 }
 
+/**
+ * 图形在**时间轴上**覆盖的范围。
+ *
+ * 回放一场里画线会攒到几百条，而屏幕上同一时刻只看得到其中几条。判断
+ * 「这条在不在视野里」如果先去算屏幕坐标，就得为每条各跑两次二分 +
+ * 两次 timeToCoordinate —— 剩下的全白算。时间范围是纯数字比较，O(1) 就能筛掉绝大多数。
+ *
+ * 三种特例：水平线横跨整个屏幕（不看时间）；延长线两端都无限延伸；
+ * 射线只往 p1→p2 的方向延伸，另一侧才是有限的。
+ */
+export function drawingTimeBounds(d: Drawing): { min: number; max: number } {
+  // 水平线横跨整个屏幕、延长线两端都无限延伸：这两种不受时间范围限制
+  if (d.type === 'hline' || d.type === 'extline') {
+    return { min: Number.NEGATIVE_INFINITY, max: Number.POSITIVE_INFINITY }
+  }
+
+  let min = d.p1.time
+  let max = d.p1.time
+  // 折线看全部锚点：中间那些点可能比首尾都更靠外（来回折的线）
+  for (const p of shapePoints(d)) {
+    if (p.time < min) min = p.time
+    if (p.time > max) max = p.time
+  }
+
+  if (d.type === 'ray') {
+    const forward = !d.p2 || d.p2.time >= d.p1.time
+    return forward
+      ? { min, max: Number.POSITIVE_INFINITY }
+      : { min: Number.NEGATIVE_INFINITY, max }
+  }
+  return { min, max }
+}
+
+/** 这条图形的时间范围和 [lo, hi] 有没有交集（false = 整条都在视野外，可以跳过） */
+export function inTimeWindow(d: Drawing, lo: number, hi: number): boolean {
+  const b = drawingTimeBounds(d)
+  return !(b.max < lo || b.min > hi)
+}
+
 /** 绘制单个图形 */
 export function drawShape(
   ctx: CanvasRenderingContext2D,
@@ -82,6 +140,17 @@ export function drawShape(
 
   const x2 = d.p2 ? map.timeToX(d.p2.time) : null
   const y2 = d.p2 ? map.priceToY(d.p2.price) : null
+
+  /**
+   * 横向裁剪：整条都落在画布左右之外就直接不做。
+   * 射线 / 延长线 / 水平线会从视野外伸进来，不能按端点裁。
+   * 留一点边距，手柄和文字不会被切在半路上。
+   */
+  if (d.type !== 'ray' && d.type !== 'extline' && d.type !== 'hline') {
+    const lo = Math.min(x1, x2 ?? x1)
+    const hi = Math.max(x1, x2 ?? x1)
+    if (hi < -CULL_MARGIN || lo > view.width + CULL_MARGIN) return
+  }
 
   ctx.save()
   ctx.lineWidth = selected ? 2.5 : 1.5
@@ -278,8 +347,14 @@ export function extendSegment(
   return [both ? x1 - ux * far : x1, both ? y1 - uy * far : y1, x1 + ux * far, y1 + uy * far]
 }
 
+/**
+ * 锚点小圆点。
+ *
+ * 不再包 save / restore：一条画线 2 个手柄、几百条画线就是几百对状态栈操作，
+ * 每帧都做一遍。这里改成直接覆盖状态（圆点本身就是一条图形里最后画的东西，
+ * 外层 drawShape 的 save / restore 会兜住），少掉的这对调用在拖拽时能明显感觉到。
+ */
 function drawHandle(ctx: CanvasRenderingContext2D, x: number, y: number, color: string): void {
-  ctx.save()
   ctx.shadowBlur = 0
   ctx.beginPath()
   ctx.arc(x, y, HANDLE_R, 0, Math.PI * 2)
@@ -288,7 +363,6 @@ function drawHandle(ctx: CanvasRenderingContext2D, x: number, y: number, color: 
   ctx.lineWidth = 1.5
   ctx.strokeStyle = color
   ctx.stroke()
-  ctx.restore()
 }
 
 /**
@@ -394,24 +468,47 @@ export function hitTest(
   const y1 = map.priceToY(d.p1.price)
   if (!isNum(x1) || !isNum(y1)) return null
 
+  const x2 = d.p2 ? map.timeToX(d.p2.time) : null
+  const y2 = d.p2 ? map.priceToY(d.p2.price) : null
+
+  /**
+   * 包围盒粗筛：光标离这一条很远就直接跳过，别再去算点到线段距离。
+   *
+   * 鼠标在图上移动时每条画线都会被问一遍「点到我了吗」。绝大多数情况下答案是
+   * 「没有」，而「没有」也该尽量便宜 —— 一次四则运算远比 hypot 便宜。
+   *
+   * 不能按包围盒裁的：折线（中间锚点可能比首尾更外）、射线 / 延长线（会伸进视野）、
+   * 水平线（横跨整幅）；竖线**纵向**上也是贯通的，只按 x 粗筛。
+   */
+  if (d.type !== 'polyline' && d.type !== 'ray' && d.type !== 'extline' && d.type !== 'hline') {
+    const lo = Math.min(x1, isNum(x2) ? x2 : x1) - CULL_MARGIN
+    const hi = Math.max(x1, isNum(x2) ? x2 : x1) + CULL_MARGIN
+    if (x < lo || x > hi) return null
+    if (d.type !== 'vline') {
+      const top = Math.min(y1, isNum(y2) ? y2 : y1) - CULL_MARGIN
+      const bottom = Math.max(y1, isNum(y2) ? y2 : y1) + CULL_MARGIN
+      if (y < top || y > bottom) return null
+    }
+  }
+
   // 折线：先看有没有点在某个锚点上（中间那些点也能单独拖）
   if (d.type === 'polyline') {
     const pts = polyPoints(d)
+    /**
+     * 一次遍历同时做两件事：判手柄、留下屏幕坐标给线段判定。
+     * 原来这里对每个锚点映射了两遍（先判手柄，再重建一次数组），
+     * 锚点多的折线在鼠标移动时等于白算一半。
+     */
+    const screen: { x: number; y: number }[] = []
     for (let i = 0; i < pts.length; i++) {
       const px = map.timeToX(pts[i].time)
       const py = map.priceToY(pts[i].price)
-      if (isNum(px) && isNum(py) && Math.hypot(x - px, y - py) <= HANDLE_R + 3) {
-        return `pt${i}`
-      }
+      if (!isNum(px) || !isNum(py)) continue
+      // 下标必须是**原始**锚点序号：拖动时按 'pt3' 这种标识回写到 polyPoints
+      if (Math.hypot(x - px, y - py) <= HANDLE_R + 3) return `pt${i}`
+      screen.push({ x: px, y: py })
     }
     // 本体：任意一段折线上都算命中
-    const screen = pts
-      .map((pt) => {
-        const px = map.timeToX(pt.time)
-        const py = map.priceToY(pt.price)
-        return isNum(px) && isNum(py) ? { x: px, y: py } : null
-      })
-      .filter((pt): pt is { x: number; y: number } => pt != null)
     for (let i = 1; i < screen.length; i++) {
       if (distToSegment(x, y, screen[i - 1].x, screen[i - 1].y, screen[i].x, screen[i].y) <= HIT_TOLERANCE) {
         return 'body'
@@ -422,8 +519,6 @@ export function hitTest(
 
   if (Math.hypot(x - x1, y - y1) <= HANDLE_R + 3) return 'p1'
 
-  const x2 = d.p2 ? map.timeToX(d.p2.time) : null
-  const y2 = d.p2 ? map.priceToY(d.p2.price) : null
   if (isNum(x2) && isNum(y2) && Math.hypot(x - x2, y - y2) <= HANDLE_R + 3) return 'p2'
 
   switch (d.type) {

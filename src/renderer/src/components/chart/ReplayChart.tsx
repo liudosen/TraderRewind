@@ -49,6 +49,7 @@ import {
   drawPreview,
   estimateTextWidth,
   hitTest,
+  inTimeWindow,
   polyPoints,
   shapePoints,
   type ChartMapping,
@@ -1389,13 +1390,60 @@ export function ReplayChart({
    *
    * 单独包一层是因为 `PendingTicket` 里在 rAF 循环里每帧都要调它：
    * 必须是稳定引用，否则每次父级重渲染都会重启动画循环。
+   * 这里直接问 series，不走 buildMapping —— 后者每次都新建四个闭包，
+   * 一帧一次的空转没必要付这份钱（待确认单挂着的时候是每帧都跑）。
    */
-  const pendingPriceToY = useCallback(
-    (price: number): number | null => buildMapping()?.priceToY(price) ?? null,
-    [buildMapping]
-  )
+  const pendingPriceToY = useCallback((price: number): number | null => {
+    const s = seriesRef.current
+    if (!s) return null
+    const c = s.priceToCoordinate(price)
+    return c == null || !Number.isFinite(c as number) ? null : (c as number)
+  }, [])
 
-  const redraw = useCallback(() => {
+  /**
+   * 当前可见的时间窗口（两端各放宽 2 根）。
+   *
+   * 用途只有一个：把「这一帧根本看不见」的画线和成交先筛掉再算坐标。
+   * 一场回放里画线会攒到几百条，全都在视野里的可能只有几条 —— 每条都要跑
+   * 二分 + timeToCoordinate 才能知道画在哪，纯属白算。这里用可视**逻辑**下标
+   * 换算成时间（未来占位区也能正确外推），全程只有常数次运算。
+   */
+  const visibleTimeWindow = useCallback((): { lo: number; hi: number } | null => {
+    const chart = chartRef.current
+    if (!chart) return null
+    const list = barsRef.current
+    const n = list.length
+    if (n < 1) return null
+    const lr = chart.timeScale().getVisibleLogicalRange()
+    if (!lr) return null
+
+    const step = rangeRef.current.step || 60
+    const at = (L: number): number => {
+      // 两头落在数据之外（左侧历史尽头 / 右侧未来空白）时按柱宽外推
+      if (L <= 0) return list[0].time + L * step
+      if (L >= n - 1) return list[n - 1].time + (L - (n - 1)) * step
+      const i = Math.floor(L)
+      return list[i].time + (list[i + 1].time - list[i].time) * (L - i)
+    }
+    const pad = 2
+    return { lo: at(lr.from - pad), hi: at(lr.to + pad) }
+  }, [])
+
+  /** 上一帧量出来的图表几何（见 paintNow 里的说明） */
+  const metricsRef = useRef<{
+    w: number
+    h: number
+    paneTop: number
+    paneBottom: number
+    paneCount: number
+    at: number
+  } | null>(null)
+  /** 尺寸/布局可能变过 —— 下一帧重新量一次 */
+  const metricsDirtyRef = useRef(true)
+  /** 待执行的重绘帧 */
+  const paintRafRef = useRef(0)
+
+  const paintNow = useCallback(() => {
     const canvas = canvasRef.current
     const chart = chartRef.current
     const series = seriesRef.current
@@ -1408,21 +1456,47 @@ export function ReplayChart({
     // 形成「越画越大」的反馈循环
     const host = canvas.parentElement
     if (!host) return
-    const dpr = window.devicePixelRatio || 1
-    const hostRect = host.getBoundingClientRect()
-    const cssW = Math.max(1, Math.round(hostRect.width))
-    const cssH = Math.max(1, Math.round(hostRect.height))
 
-    if (canvas.style.width !== `${cssW}px`) canvas.style.width = `${cssW}px`
-    if (canvas.style.height !== `${cssH}px`) canvas.style.height = `${cssH}px`
-    const bmpW = Math.round(cssW * dpr)
-    const bmpH = Math.round(cssH * dpr)
+    /**
+     * 几何量只在「可能变过」的时候读。
+     *
+     * getBoundingClientRect 会强制同步排版；一帧里读两次（容器一次、主图 pane 一次）
+     * 再夹着 canvas 的样式写入，就是最典型的 layout thrash。以前每次重绘都读一遍，
+     * 而一次鼠标移动会触发好几次重绘 —— 滚动/拖拽时这些读数叠起来就是卡顿。
+     */
+    let m = metricsRef.current
+    const paneCount = chart.panes().length
+    /**
+     * 除了「脏了就重量」，还加一条时间兜底：250ms 内至少重量一次。
+     * 有些几何变化没有事件可订阅（比如拖动副图之间的分隔条，容器尺寸不变），
+     * 全靠事件失效会一直用错的分界线。8 次/秒的两下 DOM 读取，代价可以忽略。
+     */
+    if (!m || metricsDirtyRef.current || m.paneCount !== paneCount || performance.now() - m.at > 250) {
+      const hostRect = host.getBoundingClientRect()
+      const pane = mainPaneRange(chart, hostRect)
+      const top = Math.max(0, pane.top)
+      m = {
+        w: Math.max(1, Math.round(hostRect.width)),
+        h: Math.max(1, Math.round(hostRect.height)),
+        paneTop: top,
+        paneBottom: Math.max(top + 1, pane.bottom),
+        paneCount,
+        at: performance.now()
+      }
+      metricsRef.current = m
+      metricsDirtyRef.current = false
+    }
+
+    if (canvas.style.width !== `${m.w}px`) canvas.style.width = `${m.w}px`
+    if (canvas.style.height !== `${m.h}px`) canvas.style.height = `${m.h}px`
+    const dpr = window.devicePixelRatio || 1
+    const bmpW = Math.round(m.w * dpr)
+    const bmpH = Math.round(m.h * dpr)
     if (canvas.width !== bmpW) canvas.width = bmpW
     if (canvas.height !== bmpH) canvas.height = bmpH
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, cssW, cssH)
-    const rect = { width: cssW, height: cssH }
+    ctx.clearRect(0, 0, m.w, m.h)
 
     const map = buildMapping()
     if (!map) return
@@ -1435,21 +1509,24 @@ export function ReplayChart({
      * 这里按 pane 0 的真实高度裁一刀，`view.height` 也一并换掉 ——
      * 竖线、射线的延伸长度同样按主图算，不然它们还是会长到副图外面去。
      */
-    const pane = mainPaneRange(chart, hostRect)
-    const clipTop = Math.max(0, pane.top)
-    const clipBottom = Math.max(clipTop + 1, pane.bottom)
-    const view = { width: rect.width, height: clipBottom }
+    const view = { width: m.w, height: m.paneBottom }
 
     ctx.save()
     ctx.beginPath()
-    ctx.rect(0, clipTop, rect.width, clipBottom - clipTop)
+    ctx.rect(0, m.paneTop, m.w, m.paneBottom - m.paneTop)
     ctx.clip()
 
+    /**
+     * 先按时间窗筛一遍再画：看不见的画线一条都不用算坐标。
+     * 画线一多，「算完再交给 canvas 裁掉」的成本就成了拖拽时不跟手的主因。
+     */
+    const win = visibleTimeWindow()
     for (const d of drawingsRef.current) {
+      if (win && !inTimeWindow(d, win.lo, win.hi)) continue
       drawShape(ctx, d, map, view, d.id === selectedRef.current)
     }
 
-    drawTrades(ctx, tradesRef.current, map, view, focusedRef.current?.id ?? null)
+    drawTrades(ctx, tradesRef.current, map, view, focusedRef.current?.id ?? null, win)
 
     const preview = previewRef.current
     if (preview) {
@@ -1472,9 +1549,36 @@ export function ReplayChart({
     // 记下这次用的是哪一版价格轴。如果价格轴其实还没算到最终值，
     // 看门狗会在下一帧发现指纹变了，再补一帧（见下面的 watchPriceScale）。
     scaleSigRef.current = priceScaleSignature(series)
-  }, [buildMapping])
+  }, [buildMapping, visibleTimeWindow])
+
+  /**
+   * 请求重绘 —— 合并到下一帧只画一次。
+   *
+   * 一次鼠标移动会同时踩响好几条重绘路径：十字线回调、可视范围回调、价格轴看门狗、
+   * 拖拽/画线逻辑。以前每条路径都立刻整幅重画一遍，画线一多，一帧之内画三四遍
+   * 就是肉眼可见的卡顿；而且同一个事件里连做几次「读 DOM → 写 canvas」最伤排版。
+   * 现在只记一个「要重画」的标记，真正画的时候一帧一次。
+   */
+  const redraw = useCallback(() => {
+    if (paintRafRef.current) return
+    paintRafRef.current = requestAnimationFrame(() => {
+      paintRafRef.current = 0
+      paintNow()
+    })
+  }, [paintNow])
 
   redrawRef.current = redraw
+
+  // 卸载时把没跑完的那一帧撤掉，别在已销毁的 canvas 上画
+  useEffect(
+    () => () => {
+      if (paintRafRef.current) {
+        cancelAnimationFrame(paintRafRef.current)
+        paintRafRef.current = 0
+      }
+    },
+    []
+  )
 
   // ---------- 初始化图表 ----------
   useEffect(() => {
@@ -1578,6 +1682,8 @@ export function ReplayChart({
     chartRef.current = chart
     seriesRef.current = series
     futureSeriesRef.current = futureSeries
+    // 新图 = 新几何，下一帧重新量
+    metricsDirtyRef.current = true
     setChartApi(chart)
     onChartReadyRef.current?.(chart, series)
 
@@ -1644,8 +1750,17 @@ export function ReplayChart({
         const span = Math.round(r.to - r.from)
         if (span > 5 && span < 20000) viewSpanRef.current = span
       }
+      /**
+       * 十字线移动（byUser = false）**不用重画叠加层**。
+       *
+       * 它既不改时间轴也不改价格轴，画线和成交连线一根都不会动；价格轴万一真的
+       * 变了（autoscale 重算），下面的看门狗会在同一帧补一次。以前这里也整幅重画，
+       * 于是鼠标在图上一动，就要把全部画线重绘一遍 —— 画线攒多之后，光「移动鼠标」
+       * 就足以让画面发涩，按住右键拖着画的时候更是雪上加霜。
+       */
+      if (!byUser) return
       // 刚由代码设过视野（120ms 内）就不算用户操作
-      if (byUser && performance.now() - autoRangeAtRef.current > 120) {
+      if (performance.now() - autoRangeAtRef.current > 120) {
         /**
          * 刚续过长（250ms 内）：这段视野变化是自己引起的，不是用户又拖了一下，
          * 整段跳过 —— 否则会拿一个被推歪的窗口去覆盖 userWindowRef，
@@ -1671,7 +1786,11 @@ export function ReplayChart({
     const onCrosshair = () => onRange(false)
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeByUser)
     chart.subscribeCrosshairMove(onCrosshair)
-    const ro = new ResizeObserver(() => redrawRef.current())
+    const ro = new ResizeObserver(() => {
+      // 尺寸变了才重新量几何（paintNow 里的 metricsRef 缓存）
+      metricsDirtyRef.current = true
+      redrawRef.current()
+    })
     ro.observe(el)
 
     /**
@@ -1721,6 +1840,9 @@ export function ReplayChart({
       onChartReadyRef.current?.(null, null)
       indicatorRefs.current.clear()
       posLinesRef.current.clear()
+      // 图没了，缓存的几何量也失效
+      metricsRef.current = null
+      metricsDirtyRef.current = true
       riskModeRef.current = null
       dragPosRef.current = null
       prevLenRef.current = 0
@@ -2064,6 +2186,8 @@ export function ReplayChart({
       panes[0].setStretchFactor(1)
       for (let i = 1; i < panes.length; i++) panes[i].setStretchFactor(subTotal / subCount)
     }
+    // 主图被副图挤过之后高度变了，缓存的主图分界线位置得重新量
+    metricsDirtyRef.current = true
   }, [indicatorStructure, overlayData, subPaneData])
 
   // ---------- 指标 series：只灌数据 ----------
@@ -2778,12 +2902,77 @@ export function ReplayChart({
       }
     }
 
+    /** 光标只在真的变了才写（写 style 会让整页样式失效重算） */
+    const setCursor = (c: string): void => {
+      if (el.style.cursor === c) return
+      el.style.cursor = c
+    }
+
+    /**
+     * 悬停命中测试：一帧最多一次。
+     *
+     * 鼠标在图上滑动时，「光标该显示成什么」得问过每一条画线 —— 这本身是
+     * O(画线数) 的活。而 mousemove 一秒能来几百次（高回报率鼠标更多），以前是
+     * 每个事件都完整跑一遍：画线攒到几百条之后，光是移动鼠标就能把主线程喂满，
+     * 图表那边自然跟着掉帧。这里把同一帧里的多次移动合并成一次，
+     * 并且按住鼠标期间（拖拽 / 长按）直接不算 —— 那会儿光标是什么都没意义。
+     */
+    let hoverRaf = 0
+    let hoverX = 0
+    let hoverY = 0
+    const runHover = (): void => {
+      hoverRaf = 0
+      if (toolRef.current) {
+        setCursor('crosshair')
+        return
+      }
+      const map = mapping()
+      if (!map) return
+      const win = visibleTimeWindow()
+      let cursor = ''
+      for (let i = drawingsRef.current.length - 1; i >= 0; i--) {
+        const d = drawingsRef.current[i]
+        // 视野外的画线不用问（见 visibleTimeWindow）
+        if (win && !inTimeWindow(d, win.lo, win.hi)) continue
+        const hit = hitTest(d, hoverX, hoverY, map)
+        if (hit) {
+          cursor = hit === 'body' ? 'move' : 'crosshair'
+          break
+        }
+      }
+      if (!cursor && hitLine(hoverY)) cursor = 'ns-resize'
+      setCursor(cursor)
+    }
+
     const onMouseMove = (e: MouseEvent) => {
+      const preview = previewRef.current
+      const dd = drawingDragRef.current
+
+      /**
+       * 没有进行中的交互时，这里只负责悬停反馈 —— 而且只在指针真的落在图上时才算。
+       * 鼠标扫过左侧会话列表 / 持仓卡 / 指标图例时，原来也会为每条画线跑一遍命中测试，
+       * 完全是白干，还会把主线程占住让图表掉帧。
+       */
+      if (!preview && !dd && !dragRef.current) {
+        const target = e.target as Node | null
+        if (!target || !el.contains(target)) return
+        // 按住鼠标不放（拖拽 / 长按）期间不用更新光标
+        if (e.buttons !== 0) return
+        if (toolRef.current) {
+          setCursor('crosshair')
+          return
+        }
+        const p = localPoint(e)
+        hoverX = p.x
+        hoverY = p.y
+        if (!hoverRaf) hoverRaf = requestAnimationFrame(runHover)
+        return
+      }
+
       const { x, y } = localPoint(e)
       const map = mapping()
       if (!map) return
 
-      const preview = previewRef.current
       if (preview) {
         let px = x
         let py = y
@@ -2811,7 +3000,6 @@ export function ReplayChart({
         return
       }
 
-      const dd = drawingDragRef.current
       if (dd) {
         const time = map.xToTime(x)
         const v = map.yToPrice(y)
@@ -2959,21 +3147,6 @@ export function ReplayChart({
         else onTpChange(pos.id, price)
         return
       }
-
-      if (toolRef.current) {
-        el.style.cursor = 'crosshair'
-        return
-      }
-      let cursor = ''
-      for (let i = drawingsRef.current.length - 1; i >= 0; i--) {
-        const hit = hitTest(drawingsRef.current[i], x, y, map)
-        if (hit) {
-          cursor = hit === 'body' ? 'move' : 'crosshair'
-          break
-        }
-      }
-      if (!cursor && hitLine(y)) cursor = 'ns-resize'
-      el.style.cursor = cursor
     }
 
     const finish = () => {
@@ -3035,6 +3208,7 @@ export function ReplayChart({
     window.addEventListener('keydown', onKey)
 
     return () => {
+      if (hoverRaf) cancelAnimationFrame(hoverRaf)
       el.removeEventListener('mousedown', onMouseDown, true)
       el.removeEventListener('contextmenu', onContextMenu, true)
       el.removeEventListener('dblclick', onDblClick, true)
