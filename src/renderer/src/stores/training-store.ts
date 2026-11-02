@@ -412,6 +412,8 @@ interface TrainingState {
   setIndicatorColor: (kind: IndicatorKind, uid: string, slot: string, color: string) => void
   /** 参数 + 颜色一起恢复默认 */
   resetIndicatorParams: (kind: IndicatorKind, uid: string) => void
+  /** 图例小眼睛：隐藏 / 重新显示（参数和颜色都留着） */
+  setIndicatorHidden: (kind: IndicatorKind, uid: string, hidden: boolean) => void
   /** 一键全关 */
   clearIndicators: () => void
   /** 读用户级指标偏好（应用启动时调一次） */
@@ -1477,6 +1479,31 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     // 颜色也要跟着回默认，否则「恢复默认」之后线还是花的
     const patch = (list: IndicatorInstance[]): IndicatorInstance[] =>
       list.map((x) => (x.uid === uid ? { ...x, params: resolveParams(x.id), colors: undefined } : x))
+    if (kind === 'overlay') set({ overlays: patch(get().overlays) })
+    else set({ subPanes: patch(get().subPanes) })
+    saveIndicatorPrefs({
+      overlays: get().overlays,
+      subPanes: get().subPanes,
+      customized: true
+    })
+    get().persistState()
+  },
+
+  /**
+   * 图例上的小眼睛：隐藏 / 重新显示。
+   *
+   * 只改 hidden 标记，不动参数和颜色 —— 隐藏再点回来还是原来那条线。
+   * 隐藏的实例仍留在列表里，所以图例上一直有个暗色的名字可以点回来。
+   */
+  setIndicatorHidden: (kind, uid, hidden) => {
+    const patch = (list: IndicatorInstance[]): IndicatorInstance[] =>
+      list.map((x) => {
+        if (x.uid !== uid) return x
+        if (hidden) return { ...x, hidden: true }
+        const next = { ...x }
+        delete next.hidden
+        return next
+      })
     if (kind === 'overlay') set({ overlays: patch(get().overlays) })
     else set({ subPanes: patch(get().subPanes) })
     saveIndicatorPrefs({

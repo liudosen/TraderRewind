@@ -34,8 +34,10 @@ export const zh = {
   'training.subPaneLimit': '副图最多同时显示 {n} 个',
   'training.addSubPane': '添加一个「{name}」副图',
   'training.indicatorMenuNote': '同一个指标可以加多次。加完后在 K 线左上角点指标名改参数。',
-  'training.playHotkey': '播放（空格）',
-  'training.pauseHotkey': '暂停（空格）',
+  'training.playHotkey': '播放（回车）',
+  'training.pauseHotkey': '暂停（回车）',
+  'training.scrollLatest': '归位到最新 K 线（空格）',
+  'training.backToLatest': '归位',
   'training.nextBar': '下一根（Shift + →）',
   'training.speedHint': '回放速度 {speed}x —— 点击切换到下一档（1x / 2x / 5x / 10x）',
   'training.completedHint': '该回测集已完成，可在日志页查看报告',
@@ -54,6 +56,7 @@ export const zh = {
   'training.drawingCancel': '右键/Esc 取消',
   'training.cursor': '光标（不画线）',
   'training.clearDrawings': '清除全部画线',
+  'training.toolbarDrag': '按住这里拖到任意位置 · 双击复位',
 
   // ── 图表区 ─────────────────────────────────────────
   'training.noBarsInRange': '该会话区间内没有 K 线数据',
@@ -260,8 +263,10 @@ export const en: Record<keyof typeof zh, string> = {
   'training.addSubPane': 'Add a {name} sub-pane',
   'training.indicatorMenuNote':
     'The same indicator can be added more than once. Click its name in the top-left of the chart to change its parameters.',
-  'training.playHotkey': 'Play (Space)',
-  'training.pauseHotkey': 'Pause (Space)',
+  'training.playHotkey': 'Play (Enter)',
+  'training.pauseHotkey': 'Pause (Enter)',
+  'training.scrollLatest': 'Back to latest candle (Space)',
+  'training.backToLatest': 'Latest',
   'training.nextBar': 'Next candle (Shift + →)',
   'training.speedHint': 'Replay speed {speed}x — click to step through 1x / 2x / 5x / 10x',
   'training.completedHint': 'This session is complete — the report is in Journal',
@@ -279,6 +284,7 @@ export const en: Record<keyof typeof zh, string> = {
   'training.drawingCancel': 'right-click / Esc to cancel',
   'training.cursor': 'Cursor (no drawing)',
   'training.clearDrawings': 'Clear all drawings',
+  'training.toolbarDrag': 'Drag here to move it anywhere · double-click to reset',
 
   'training.noBarsInRange': 'No candles in this session range',
 

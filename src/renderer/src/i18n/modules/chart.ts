@@ -39,6 +39,15 @@ export const zh = {
   'chart.axisMonth': '{m}月',
   'chart.axisDay': '{d}日',
 
+  /** 刻度后面的星期。索引按 Date.getUTCDay()：0 = 周日 */
+  'chart.weekdaySun': '周日',
+  'chart.weekdayMon': '周一',
+  'chart.weekdayTue': '周二',
+  'chart.weekdayWed': '周三',
+  'chart.weekdayThu': '周四',
+  'chart.weekdayFri': '周五',
+  'chart.weekdaySat': '周六',
+
   // ── 画线右键菜单 / 文本输入 ────────────────────────
   'chart.textPlaceholder': '输入文字，回车确认',
   'chart.menuFallback': '画线',
@@ -115,6 +124,14 @@ export const en: Record<keyof typeof zh, string> = {
 
   'chart.axisMonth': '{m}',
   'chart.axisDay': '{d}',
+
+  'chart.weekdaySun': 'Sun',
+  'chart.weekdayMon': 'Mon',
+  'chart.weekdayTue': 'Tue',
+  'chart.weekdayWed': 'Wed',
+  'chart.weekdayThu': 'Thu',
+  'chart.weekdayFri': 'Fri',
+  'chart.weekdaySat': 'Sat',
 
   'chart.textPlaceholder': 'Type text, press Enter',
   'chart.menuFallback': 'Drawing',

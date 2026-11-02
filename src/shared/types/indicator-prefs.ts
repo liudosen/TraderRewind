@@ -104,7 +104,9 @@ function normalizeList(raw: unknown, allowed: string[]): IndicatorInstance[] {
       uid,
       id: id as IndicatorId,
       params: resolveParams(id as IndicatorId, { [id]: rawParams } as never),
-      ...(colors ? { colors } : {})
+      ...(colors ? { colors } : {}),
+      // 眼睛关掉的状态要一起留住，否则重开会话指标又自己冒出来了
+      ...((item as { hidden?: unknown }).hidden === true ? { hidden: true } : {})
     })
   }
   return out

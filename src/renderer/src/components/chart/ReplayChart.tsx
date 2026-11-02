@@ -143,6 +143,8 @@ interface ReplayChartProps {
   onIndicatorReset?: (kind: IndicatorKind, uid: string) => void
   /** 从图例里移除某个指标实例 */
   onIndicatorRemove?: (kind: IndicatorKind, uid: string) => void
+  /** 图例小眼睛：隐藏 / 重新显示某个指标实例 */
+  onIndicatorHidden?: (kind: IndicatorKind, uid: string, hidden: boolean) => void
   drawings: Drawing[]
   onDrawingsChange: (next: Drawing[]) => void
   activeTool: DrawingType | null
@@ -576,28 +578,55 @@ function logicalOfTime(bars: Bar[], count: number, t: number): number {
   return lo + (span > 0 ? (t - bars[lo].time) / span : 0)
 }
 
-/** 订单时间 MM-DD HH:MM（默认 UTC+8，跟成交列表一致）；withDate=false 只留 HH:MM */
-function fmtClock(ts: number, withDate = true): string {
-  const tz = currentTimezone()
-  const t = tzPartsFromSec(ts, tz)
-  const p = (n: number): string => String(n).padStart(2, '0')
-  const hm = `${p(t.hour)}:${p(t.minute)}`
-  return withDate ? `${p(t.month)}-${p(t.day)} ${hm}` : hm
-}
+/** 刻度 / 十字线后面的星期文案，下标与 tzPartsFromSec().weekday 一致（0 = 周日） */
+const WEEKDAY_KEYS = [
+  'chart.weekdaySun',
+  'chart.weekdayMon',
+  'chart.weekdayTue',
+  'chart.weekdayWed',
+  'chart.weekdayThu',
+  'chart.weekdayFri',
+  'chart.weekdaySat'
+] as const
 
-/** 坐标轴刻度：按设置里的时区渲染（lightweight-charts 默认走 UTC，会跟成交列表差 8 小时） */
-function fmtTickMark(ts: number, type: TickMarkType, t: Translator): string {
+/**
+ * 订单时间 MM-DD HH:MM（默认 UTC+8，跟成交列表一致）；withDate=false 只留 HH:MM。
+ *
+ * `withWeekday` 打开时在日期后面缀上星期 —— 十字线横着拉的时候，
+ * 「今天周几」比「几号」更影响对行情的判断（周末 / 周一跳空）。
+ */
+function fmtClock(ts: number, withDate = true, t?: Translator, withWeekday = false): string {
   const parts = tzPartsFromSec(ts, currentTimezone())
   const p = (n: number): string => String(n).padStart(2, '0')
+  const hm = `${p(parts.hour)}:${p(parts.minute)}`
+  if (!withDate) return hm
+  const wd =
+    withWeekday && t ? ` ${t(WEEKDAY_KEYS[parts.weekday] ?? 'chart.weekdaySun')}` : ''
+  return `${p(parts.month)}-${p(parts.day)}${wd} ${hm}`
+}
+
+/**
+ * 坐标轴刻度：按设置里的时区渲染（lightweight-charts 默认走 UTC，会跟成交列表差 8 小时）。
+ *
+ * `withWeekday` 打开时，日期刻度后面缀上星期（「2日 周一」）；
+ * 日内周期下只有「日界刻度」（00:00 那个）带星期 —— 每小时都挂一个「周一」会把轴挤满。
+ */
+function fmtTickMark(ts: number, type: TickMarkType, t: Translator, withWeekday: boolean): string {
+  const parts = tzPartsFromSec(ts, currentTimezone())
+  const p = (n: number): string => String(n).padStart(2, '0')
+  const wd = withWeekday ? ` ${t(WEEKDAY_KEYS[parts.weekday] ?? 'chart.weekdaySun')}` : ''
   switch (type) {
     case TickMarkType.Year:
       return String(parts.year)
     case TickMarkType.Month:
       return t('chart.axisMonth', { m: parts.month })
     case TickMarkType.DayOfMonth:
-      return t('chart.axisDay', { d: parts.day })
-    case TickMarkType.Time:
-      return `${p(parts.hour)}:${p(parts.minute)}`
+      return `${t('chart.axisDay', { d: parts.day })}${wd}`
+    case TickMarkType.Time: {
+      const hm = `${p(parts.hour)}:${p(parts.minute)}`
+      // 日内图上 00:00 就是换日那根，标出星期用户才知道跳到哪一天了
+      return parts.hour === 0 && parts.minute === 0 ? `${hm}${wd}` : hm
+    }
     case TickMarkType.TimeWithSeconds:
       return `${p(parts.hour)}:${p(parts.minute)}:${p(parts.second)}`
     default:
@@ -631,6 +660,23 @@ function mainPaneRange(chart: IChartApi, hostRect: DOMRect): { top: number; bott
  * 才看得出这是「浮在上面的一张票」而不是画进图里的一个元素。
  */
 const PANEL_BG = '#1a1a1a'
+
+/**
+ * 右侧未来占位「一次续多长」的起步根数。
+ *
+ * 横向时间要能无限往右滑：设置里的「未来空白」只是起步值，用户拖到占位尽头
+ * 就再续一段。续长量按现有长度的一半递增（见 growFuture），所以越往后每次续得越多，
+ * 避免几十万点还要每 200 根重建一次数组。
+ */
+const FUTURE_GROW_STEP = 2000
+
+/**
+ * 未来占位的天花板。
+ *
+ * 不设上限就等于把「无限」交给用户的手指 —— M1 上一分钟一根，拖久了数组会把内存吃干。
+ * 50000 根在 M1 上是约 35 天的连续分钟，实际操作中撞不到。
+ */
+const FUTURE_AHEAD_MAX = 50000
 
 /**
  * 待确认单贴在开仓线上的那一行「票面」。
@@ -767,6 +813,7 @@ export function ReplayChart({
   onIndicatorColor,
   onIndicatorReset,
   onIndicatorRemove,
+  onIndicatorHidden,
   drawings,
   onDrawingsChange,
   activeTool,
@@ -791,12 +838,39 @@ export function ReplayChart({
   // 当前生效时区：历史会话用它自己打单时记录的时区
   const timezone = useTimezoneStore((s) => s.effective)
 
+  /**
+   * 右侧「未来空白」的根数。
+   *
+   * 建图 effect 和鼠标事件 effect 的依赖都是挑着写的（加依赖会重建整张图 / 重绑事件），
+   * 所以这里留一份 ref 给闭包读，就不会读到过期的主题。
+   */
+  const futureBarsRef = useRef(theme.futureBars)
+  futureBarsRef.current = theme.futureBars
+  /**
+   * 右侧未来占位当前铺了多少根。
+   *
+   * 设置里的「未来空白」只是起步值；用户往右拖到尽头时会一段段续上
+   * （见 FUTURE_GROW_STEP），所以横向时间实际上是滑不到头的。
+   */
+  const futureAheadRef = useRef(0)
+  /**
+   * 上次续长的时刻。
+   *
+   * 续长是**改数据长度**，而 lightweight-charts 在数据变长时会保持「视野右端与末根的距离」，
+   * 于是视野跟着往右跳一段 —— 这一跳以「用户平移」的名义回调进 onRange，
+   * 又满足续长条件，就自己续自己一路顶到上限（实测一帧内从 60 跳到 50000）。
+   * 用时间戳挡住这段自激：一次续长之后 250ms 内不再续。
+   */
+  const futureGrowAtRef = useRef(0)
+
   const containerRef = useRef<HTMLDivElement>(null)
   /** 最外层容器：用来量「主图指标图例占了多高」（提示条要排在它下面） */
   const rootRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  /** 右侧「未来」占位序列：只有时间、不画线，负责把时间轴撑到未来（见建图处的说明） */
+  const futureSeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   /** 同一个 chart 实例的 state 版：图例要订阅十字线，必须能拿到实例并在挂载后重渲染 */
   const [chartApi, setChartApi] = useState<IChartApi | null>(null)
   /**
@@ -986,10 +1060,18 @@ export function ReplayChart({
       return
     }
     const lastIndex = Math.min(cursor, bars.length - 1)
+    /**
+     * 「一根 K 线多长」按最近两根算。
+     *
+     * 未来空白区的时间刻度、画到未来的锚点都靠它外推；用 bars[1]-bars[0]
+     * 会被开头的午休 / 隔夜缺口带偏，越往右画偏得越多。
+     */
+    const prevIndex = Math.max(0, lastIndex - 1)
+    const recentStep = bars[lastIndex].time - bars[prevIndex].time
     rangeRef.current = {
       first: bars[0].time,
       last: bars[lastIndex].time,
-      step: bars.length > 1 ? bars[1].time - bars[0].time : 0,
+      step: recentStep > 0 ? recentStep : bars.length > 1 ? bars[1].time - bars[0].time : 0,
       lastIndex
     }
   }, [bars, cursor])
@@ -998,6 +1080,60 @@ export function ReplayChart({
   const redrawRef = useRef<() => void>(() => undefined)
   /** 上一次重绘时价格轴的样子（见 priceScaleSignature） */
   const scaleSigRef = useRef('')
+
+  /**
+   * 按当前 K 线尾巴铺 `count` 个未来占位点（不碰 futureAheadRef，纯渲染）。
+   *
+   * 时间按「最近两根 K 线的间隔」往后排，跟坐标轴上外推的口径对齐；
+   * 数值沿用最后一根收盘价 —— 它既不绘制也不参与自动缩放，只是把时间点带上去。
+   */
+  const applyFuture = useCallback((count: number) => {
+    const fs = futureSeriesRef.current
+    if (!fs) return
+    const { last, step, lastIndex } = rangeRef.current
+    const list = barsRef.current
+    if (count <= 0 || !last || step <= 0 || list.length === 0) {
+      fs.setData([])
+      return
+    }
+    const value = list[Math.min(lastIndex, list.length - 1)]?.close ?? 0
+    const points: { time: UTCTimestamp; value: number }[] = []
+    for (let k = 1; k <= count; k++) {
+      points.push({ time: (last + k * step) as UTCTimestamp, value })
+    }
+    fs.setData(points)
+  }, [])
+
+  /**
+   * 重铺右侧「未来」占位点。
+   *
+   * @param reset true = 回到设置里的根数（换数据 / 换周期 / 改设置时用）；
+   *              false = 只补不吞，用户拖出去的未来得留着。
+   */
+  const refreshFuture = useCallback(
+    (reset = false) => {
+      const base = Math.max(0, Math.floor(futureBarsRef.current))
+      futureAheadRef.current = reset ? base : Math.max(futureAheadRef.current, base)
+      applyFuture(futureAheadRef.current)
+    },
+    [applyFuture]
+  )
+
+  /**
+   * 用户往右拖到占位尽头时再续一段 —— 这就是「横向时间无限」。
+   *
+   * 只加长度、不挪视野：续长发生在右端之外，用户正在看的那一段一根都不该动。
+   * 关掉「未来空白」（设置为 0）就不续 —— 那是用户明确不要未来区。
+   */
+  const growFuture = useCallback((): boolean => {
+    if (futureBarsRef.current <= 0) return false
+    const cur = futureAheadRef.current
+    if (cur >= FUTURE_AHEAD_MAX) return false
+    const step = Math.max(FUTURE_GROW_STEP, Math.round(cur * 0.5))
+    futureAheadRef.current = Math.min(FUTURE_AHEAD_MAX, cur + step)
+    applyFuture(futureAheadRef.current)
+    return true
+  }, [applyFuture])
 
   useEffect(() => {
     drawingsRef.current = drawings
@@ -1029,6 +1165,8 @@ export function ReplayChart({
   const overlayData = useMemo(() => {
     const out: { key: string; uid: string; slot: string; color: string; values: Series }[] = []
     for (const inst of overlays) {
+      // 点了小眼睛就不画线（也不建 series），参数还留着
+      if (inst.hidden) continue
       for (const line of calcOverlayLines(inst.id as OverlayId, calcBars, inst.params, inst.colors)) {
         // series key 带上实例 uid：同一个指标添加两次也不会互相覆盖
         out.push({
@@ -1045,19 +1183,22 @@ export function ReplayChart({
 
   const subPaneData = useMemo(
     () =>
-      subPanes.map((inst) => ({
-        uid: inst.uid,
-        view: calcSubPaneView(
-          inst.id as SubPaneId,
-          calcBars,
-          inst.params,
-          {
-            upColor: theme.upColor,
-            downColor: theme.downColor
-          },
-          inst.colors
-        )
-      })),
+      // 隐藏的副图不建 pane：整块图直接让位给别的副图，而不是留一片空白的坐标轴
+      subPanes
+        .filter((inst) => !inst.hidden)
+        .map((inst) => ({
+          uid: inst.uid,
+          view: calcSubPaneView(
+            inst.id as SubPaneId,
+            calcBars,
+            inst.params,
+            {
+              upColor: theme.upColor,
+              downColor: theme.downColor
+            },
+            inst.colors
+          )
+        })),
     [calcBars, subPanes, theme.upColor, theme.downColor]
   )
 
@@ -1084,6 +1225,9 @@ export function ReplayChart({
   /**
    * 图例 / 十字线读数用的行描述：每个指标实例一行，自带 pane 序号和每段线的颜色。
    * 主图实例 pane=0（读数接在图例 chip 后面），副图实例按顺序占 pane 1..n。
+   *
+   * 隐藏的实例也留一行：pane 记 0、带 hidden 标记，图例把它们排在主图那一行变暗显示，
+   * 用户随时能点小眼睛把它放回来（副图被隐藏时已经没有它自己的 pane 了）。
    */
   const indicatorRows = useMemo<IndicatorRow[]>(() => {
     const rows: IndicatorRow[] = []
@@ -1094,9 +1238,12 @@ export function ReplayChart({
         pane: 0,
         title: translateLabel(locale, indicatorTitle(inst.id, inst.params)),
         format: 'price',
-        segs: overlayData
-          .filter((l) => l.uid === inst.uid)
-          .map((l) => ({ key: l.key, color: l.color }))
+        hidden: inst.hidden === true,
+        segs: inst.hidden
+          ? []
+          : overlayData
+              .filter((l) => l.uid === inst.uid)
+              .map((l) => ({ key: l.key, color: l.color }))
       })
     }
     subPaneData.forEach((entry, i) => {
@@ -1115,6 +1262,18 @@ export function ReplayChart({
         }))
       })
     })
+    for (const inst of subPanes) {
+      if (!inst.hidden) continue
+      rows.push({
+        kind: 'sub',
+        inst,
+        pane: 0,
+        title: translateLabel(locale, indicatorTitle(inst.id, inst.params)),
+        format: 'plain',
+        hidden: true,
+        segs: []
+      })
+    }
     return rows
   }, [overlays, subPanes, overlayData, subPaneData, locale])
 
@@ -1198,11 +1357,18 @@ export function ReplayChart({
       xToTime: (x) => {
         const time = ts.coordinateToTime(x)
         if (time != null) return Number(time)
-        // 落在最后一根右侧的空白区 / 第一根左侧：贴边，不要卡住拖拽
-        const { first, last } = rangeRef.current
+        // 落在最后一根右侧的「未来空白」/ 第一根左侧：按柱宽把屏幕距离换算成时间。
+        //
+        // 以前这里是「贴到最后一根」，于是拖到未来区画线时锚点全被吸回最后一根，
+        // 画出来的线永远到不了未来。现在换算成真正的时间戳，画线才能落在未来。
+        const { first, last, step } = rangeRef.current
         if (!first || !last) return null
         const lastX = ts.timeToCoordinate(last as UTCTimestamp)
-        if (lastX != null && x > (lastX as number)) return last
+        if (lastX != null && x > (lastX as number)) {
+          const bs = ts.options().barSpacing || 6
+          const aheadBars = (x - (lastX as number)) / bs
+          return Math.round(last + aheadBars * (step || 60))
+        }
         const firstX = ts.timeToCoordinate(first as UTCTimestamp)
         if (firstX != null && x < (firstX as number)) return first
         return null
@@ -1341,7 +1507,7 @@ export function ReplayChart({
         // 默认是按 UTC 渲染刻度，而成交列表用的是本地时间，两者差 8 小时
         // 看起来就像「订单定位偏了」，这里统一按本地时间画
         tickMarkFormatter: (time: Time, type: TickMarkType): string =>
-          fmtTickMark(Number(time), type, t)
+          fmtTickMark(Number(time), type, t, t0.axisWeekday)
       },
       crosshair: {
         // 0 = 跟随鼠标自由移动；1 = 磁吸到最近 K 线
@@ -1364,7 +1530,8 @@ export function ReplayChart({
       localization: {
         locale: 'zh-CN',
         // 十字线标签同样按本地时间，跟成交列表对齐
-        timeFormatter: (time: Time): string => fmtClock(Number(time))
+        timeFormatter: (time: Time): string =>
+          fmtClock(Number(time), true, t, t0.axisWeekday)
       }
     })
 
@@ -1380,14 +1547,90 @@ export function ReplayChart({
       priceFormat: { type: 'price', precision: 5, minMove: 0.00001 }
     })
 
+    /**
+     * 「未来」占位序列：只为了让时间轴往右延伸出未来刻度。
+     *
+     * lightweight-charts 的空白（rightOffset）区**不会画任何刻度标签**，所以光把
+     * rightOffset 调大，右边只会是一片没有任何时间的黑，画线时根本不知道该对齐到哪天。
+     * 这里铺一条不画的线（每个点都是真实时间戳），时间轴就会把这些时间当作刻度画出来，
+     * 而 K 线序列本身一根都不多 —— 正好是「看得到未来时间、看不到未来 K 线」。
+     *
+     * 三条关键设置：
+     *  · lineVisible:false + 透明色 —— 一个像素都不画；
+     *  · autoscaleInfoProvider 返回 null —— 不许这段占位把价格轴撑变形；
+     *  · lastValueVisible / priceLineVisible / crosshairMarkerVisible 全关 ——
+     *    不显示最新价线、不留标记。
+     */
+    const futureSeries = chart.addSeries(
+      LineSeries,
+      {
+        color: 'rgba(0,0,0,0)',
+        lineVisible: false,
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => null
+      },
+      0
+    )
+
     chartRef.current = chart
     seriesRef.current = series
+    futureSeriesRef.current = futureSeries
     setChartApi(chart)
     onChartReadyRef.current?.(chart, series)
 
     if (import.meta.env.DEV) {
       ;(window as any).__rw_chart = { chart, series }
     }
+
+    /**
+     * 续长一段未来占位点，并把视野按原样设回去。
+     *
+     * 为什么必须还原：setData 让数据变长时，图表会保持「视野右端与末根的距离」，
+     * 于是视野整体往右跳掉整整一段（实测一跳 345 根 ≈ 2.7 屏）。
+     *
+     * 为什么只在「没按住鼠标」时做：真实拖动期间这段代码是在图表的 mousemove 处理里
+     * 跑起来的，同步设回去会被它后面的增量平移覆盖，微任务里设回去又会让它的
+     * 内部锚点错位（实测拖到一半直接卡住不动）。所以拖动中只记账（growPendingRef），
+     * 松手后再补 —— 那时没有谁跟这次还原抢视野。
+     */
+    const growAndRestore = () => {
+      const r = chart.timeScale().getVisibleLogicalRange()
+      if (!r) return
+      futureGrowAtRef.current = performance.now()
+      if (!growFuture()) return
+      autoRangeAtRef.current = performance.now()
+      chart.timeScale().setVisibleLogicalRange(r)
+    }
+    /** 拖动中撞到未来尽头：先记下来，等松手再续 */
+    let growPending = false
+    /**
+     * 鼠标/手指按着没。
+     *
+     * 图表自己处理平移，没有对外说「我正在拖」的接口，所以自己盯一下全局的按下/松开。
+     * 捕获阶段挂监听：图里的画线/拖单子会 stopPropagation，但拦不住捕获阶段。
+     */
+    let pointerDown = false
+    const markDown = () => {
+      pointerDown = true
+    }
+    /**
+     * 松手：把拖动期间搁置的续长补上。
+     *
+     * 此刻没有谁在跟这次「设回视野」抢 —— 拖动中做会被图表的增量平移覆盖，实测会卡死。
+     */
+    const markUp = () => {
+      pointerDown = false
+      if (!growPending) return
+      growPending = false
+      growAndRestore()
+    }
+    window.addEventListener('pointerdown', markDown, true)
+    window.addEventListener('pointerup', markUp, true)
+    window.addEventListener('pointercancel', markUp, true)
+    const isDragging = () => pointerDown
 
     /**
      * @param byUser true = 由用户缩放/平移触发；false = 只是十字线在动。
@@ -1403,7 +1646,24 @@ export function ReplayChart({
       }
       // 刚由代码设过视野（120ms 内）就不算用户操作
       if (byUser && performance.now() - autoRangeAtRef.current > 120) {
+        /**
+         * 刚续过长（250ms 内）：这段视野变化是自己引起的，不是用户又拖了一下，
+         * 整段跳过 —— 否则会拿一个被推歪的窗口去覆盖 userWindowRef，
+         * 判断续长的那个条件也会被自激一遍（见 futureGrowAtRef）。
+         */
+        if (performance.now() - futureGrowAtRef.current <= 250) {
+          redrawRef.current()
+          return
+        }
         userWindowRef.current = readVisibleWindow(chart)
+        /**
+         * 滑到未来占位的尽头了就再续一段 —— 横向时间因此滑不到头。
+         * 拖动中只记账，松手时补（见 growAndRestore 的注释）。
+         */
+        if (r && r.to > rangeRef.current.lastIndex + 1 + futureAheadRef.current - 2) {
+          if (isDragging()) growPending = true
+          else growAndRestore()
+        }
       }
       redrawRef.current()
     }
@@ -1448,11 +1708,15 @@ export function ReplayChart({
     return () => {
       cancelAnimationFrame(watchRaf)
       ro.disconnect()
+      window.removeEventListener('pointerdown', markDown, true)
+      window.removeEventListener('pointerup', markUp, true)
+      window.removeEventListener('pointercancel', markUp, true)
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRangeByUser)
       chart.unsubscribeCrosshairMove(onCrosshair)
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
+      futureSeriesRef.current = null
       setChartApi(null)
       onChartReadyRef.current?.(null, null)
       indicatorRefs.current.clear()
@@ -1461,8 +1725,12 @@ export function ReplayChart({
       dragPosRef.current = null
       prevLenRef.current = 0
       prevBarsRef.current = null
+      // 图重建了，未来占位要从设置值重新铺
+      futureAheadRef.current = 0
+      futureGrowAtRef.current = 0
     }
-  }, [])
+    // growFuture 是稳定引用（内部只读 ref），放进依赖不会导致整张图重建
+  }, [growFuture])
 
   // ---------- 精度 ----------
   useEffect(() => {
@@ -1482,11 +1750,12 @@ export function ReplayChart({
       // 切时区后要让坐标轴和十字线立刻按新时区重画
       timeScale: {
         tickMarkFormatter: (time: Time, type: TickMarkType): string =>
-          fmtTickMark(Number(time), type, t)
+          fmtTickMark(Number(time), type, t, theme.axisWeekday)
       },
       localization: {
         locale: 'zh-CN',
-        timeFormatter: (time: Time): string => fmtClock(Number(time))
+        timeFormatter: (time: Time): string =>
+          fmtClock(Number(time), true, t, theme.axisWeekday)
       },
       grid: {
         vertLines: { color: theme.gridColor, visible: theme.gridVisible },
@@ -1532,6 +1801,7 @@ export function ReplayChart({
     const visibleCount = Math.min(bars.length, cursor + 1)
     if (visibleCount <= 0) {
       series.setData([])
+      futureSeriesRef.current?.setData([])
       prevLenRef.current = 0
       prevBarsRef.current = bars
       return
@@ -1539,6 +1809,16 @@ export function ReplayChart({
 
     const sameDataset = prevBarsRef.current === bars
     const appendedOne = sameDataset && visibleCount === prevLenRef.current + 1
+
+    /**
+     * 默认视图右侧留多少根空白。
+     *
+     * 至少 3 根（最后一根不贴边框，还能看出下一根要来的位置）；
+     * 开了「未来空白」就多留一点，一上来就能看到未来的时间刻度、也有地方落笔。
+     * 但最多 20 根 —— 再多一开屏就有半屏是空的，反而不知道看哪儿。
+     */
+    const rightPad = (count: number): number =>
+      Math.max(count <= 10 ? 3 : 7, Math.min(Math.max(0, futureBarsRef.current), 20))
 
     /**
      * 换成另一个回测集（不是切周期）时，记着的窗口属于上一份数据，先丢掉，
@@ -1566,7 +1846,16 @@ export function ReplayChart({
       })
       const range = chart.timeScale().getVisibleLogicalRange()
       if (range && visibleCount > range.to - 3) {
-        chart.timeScale().scrollToPosition(0, false)
+        /**
+         * 跟着新 K 线右移，但保持当前视野宽度。
+         *
+         * 不能用 scrollToPosition(0)：那是「滚到最右」，而最右边现在是预留的未来空白，
+         * 一滚 K 线就被推到屏幕外，只剩一片空时间轴。
+         */
+        const span = Math.max(10, range.to - range.from)
+        const to = visibleCount + 3
+        autoRangeAtRef.current = performance.now()
+        chart.timeScale().setVisibleLogicalRange({ from: to - span, to })
       }
     } else {
       const data: CandlestickData[] = []
@@ -1596,7 +1885,7 @@ export function ReplayChart({
       // 保持根数会让时间跨度随周期成倍缩放（M1 的 346 根是 6 小时，M15 的 346 根是 3.6 天），
       // 切过去等于换了一个时间段看。这里把切换前的时间窗口映射回新周期的下标。
       if (tfChanged) {
-        const pad = visibleCount <= 10 ? 3 : 7
+        const pad = rightPad(visibleCount)
         const maxTo = visibleCount + pad
         // 下限只防「一段窗口在更大周期上只剩一根」这种退化画面；
         // 撑大之后不会回头污染下一轮切换（基准始终是 userWindowRef）。
@@ -1633,7 +1922,7 @@ export function ReplayChart({
         autoRangeAtRef.current = performance.now()
         chart.timeScale().setVisibleLogicalRange({ from, to })
       } else if (!sameDataset || Math.abs(visibleCount - prevLenRef.current) > 2) {
-        const pad = visibleCount <= 10 ? 3 : 7
+        const pad = rightPad(visibleCount)
         autoRangeAtRef.current = performance.now()
         chart.timeScale().setVisibleLogicalRange({
           from: Math.max(0, visibleCount - 110),
@@ -1644,8 +1933,24 @@ export function ReplayChart({
 
     prevLenRef.current = visibleCount
     prevBarsRef.current = bars
+    /**
+     * 主图推进后重铺未来时间点：窗口跟着往右挪，占位的时间也要跟着往后接。
+     *
+     * 换数据 / 换周期时重置回设置值 —— 上一份数据上拖出来的几十万根未来
+     * 跟这份数据无关，留着只会让占位点到很远的过去或未来去。
+     */
+    refreshFuture(tfChanged || !sameDataset)
     redrawRef.current()
   }, [bars, cursor, partialBar])
+
+  // ---------- 设置里改了「未来」根数：只重铺占位点，不重建图表 ----------
+  const prevFutureBarsRef = useRef(theme.futureBars)
+  useEffect(() => {
+    if (prevFutureBarsRef.current === theme.futureBars) return
+    prevFutureBarsRef.current = theme.futureBars
+    // 用户明确改了根数就按新设置收回来，别把之前拖出去的长度顶在这儿
+    refreshFuture(true)
+  }, [theme.futureBars, refreshFuture])
 
   // ---------- 指标 series：结构变化时整体重建 ----------
   useEffect(() => {
@@ -2172,13 +2477,18 @@ export function ReplayChart({
     }
 
     /**
-     * 把时间夹到「已加载的 K 线范围」内。
-     * 落在最后一根之后的时间无法映射成坐标，画线会保存成功却看不见。
+     * 把时间夹到「可画范围」内：已加载的 K 线区间 + 右侧预留的未来空白。
+     *
+     * 上限不是最后一根 —— 允许把锚点落在未来空白里，画预测线 / 趋势线延长用；
+     * 再往右就没有坐标可言（图上根本拖不到那里），夹住免得存下一个看不见的点。
      */
     const clampTime = (time: number): number => {
-      const { first, last } = rangeRef.current
+      const { first, last, step } = rangeRef.current
       if (!first || !last) return time
-      return Math.min(Math.max(time, first), last)
+      // 上限用「实际铺了多长」而不是设置值：往右拖过的未来也得能落笔
+      const ahead = Math.max(futureBarsRef.current, futureAheadRef.current)
+      const futureLimit = last + Math.max(0, ahead) * (step || 60)
+      return Math.min(Math.max(time, first), futureLimit)
     }
 
     /** 提交当前预览（第二下左键 / 单点工具的第一下 / 折线右键收尾） */
@@ -2511,24 +2821,32 @@ export function ReplayChart({
         const { first, last } = rangeRef.current
         let dt = time - dd.startTime
 
-        // 整体拖动：把位移夹到「已加载 K 线区间」内，并吸附到整根 K 线。
-        // 不夹的话，图形右端会先于鼠标越过最后一根，时间点落到数据之外，
-        // 坐标映射返回 null → 整个图形瞬间消失（回放里最后一根正好是当前价格线所在处）
+        // 整体拖动：把位移夹到「已加载 K 线 + 未来空白」内。
+        // 落在图上拖不到的地方，坐标映射就返回 null → 整个图形瞬间消失。
         if (dd.handle === 'body') {
+          const { step } = rangeRef.current
+          // 同 clampTime：可拖到的右界跟着实际铺开的未来走
+          const ahead = Math.max(futureBarsRef.current, futureAheadRef.current)
+          const futureLimit = last
+            ? last + Math.max(0, ahead) * (step || 60)
+            : last
           if (first && last) {
             // 折线要按全部锚点算包围盒，只看 p1/p2 会漏掉中间那些点
             const all = shapePoints(dd.origin)
             const minT = Math.min(...all.map((pt) => pt.time))
             const maxT = Math.max(...all.map((pt) => pt.time))
             const lo = first - minT
-            const hi = last - maxT
+            const hi = futureLimit - maxT
             if (lo <= hi) dt = Math.min(Math.max(dt, lo), hi)
           }
           const target = dd.origin.p1.time + dt
-          const snapped = nearestBarTime(barsRef.current, target)
-          if (snapped != null) {
-            const st = first && last ? Math.min(Math.max(snapped, first), last) : snapped
-            dt = st - dd.origin.p1.time
+          // 只有落在真实 K 线区间内才吸附到整根；未来区没有 K 线可吸，得让锚点停在原地
+          if (target <= last) {
+            const snapped = nearestBarTime(barsRef.current, target)
+            if (snapped != null) {
+              const st = first && last ? Math.min(Math.max(snapped, first), last) : snapped
+              dt = st - dd.origin.p1.time
+            }
           }
         }
 
@@ -2781,9 +3099,12 @@ export function ReplayChart({
         type: 'text',
         p1: {
           time: (() => {
-            const { first, last } = rangeRef.current
+            const { first, last, step } = rangeRef.current
             if (!first || !last) return draft.time
-            return Math.min(Math.max(draft.time, first), last)
+            // 和画线工具同一套口径：右侧未来空白里也能落字（写「目标位」之类）
+            const ahead = Math.max(futureBarsRef.current, futureAheadRef.current)
+            const futureLimit = last + Math.max(0, ahead) * (step || 60)
+            return Math.min(Math.max(draft.time, first), futureLimit)
           })(),
           price: draft.price
         },
@@ -2909,6 +3230,7 @@ export function ReplayChart({
         onColor={onIndicatorColor}
         onReset={onIndicatorReset}
         onRemove={onIndicatorRemove}
+        onHidden={onIndicatorHidden}
       />
 
       {textDraft && (

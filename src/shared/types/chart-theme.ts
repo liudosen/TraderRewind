@@ -27,7 +27,21 @@ export interface ChartTheme {
   /** K 线细节 */
   showWick: boolean
   showBorder: boolean
+  /** 时间轴刻度上是否带星期几（日刻度 / 日界刻度后追加「周一」这种） */
+  axisWeekday: boolean
+  /**
+   * 右侧预留的「未来」根数。
+   *
+   * 图表会为这些位置补上**只有时间、没有 K 线**的点：时间轴照样能往右拖、能看见
+   * 未来的日期刻度，但那段里一根蜡烛都不会画 —— 用来把趋势线 / 预测线画到未来。
+   * 0 = 不许看到未来时间（旧行为）。
+   */
+  futureBars: number
 }
+
+/** 未来空白的允许范围（再多拖起来就飘了） */
+export const FUTURE_BARS_MIN = 0
+export const FUTURE_BARS_MAX = 600
 
 /** 默认主题：白涨灰跌 + 无网格（用户调好的这套作为出厂默认） */
 export const DEFAULT_CHART_THEME: ChartTheme = {
@@ -43,7 +57,9 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
   crosshairLabels: true,
   crosshairMagnet: false,
   showWick: true,
-  showBorder: true
+  showBorder: true,
+  axisWeekday: true,
+  futureBars: 60
 }
 
 /** 预设配色 */
@@ -106,6 +122,10 @@ export function normalizeTheme(input: unknown): ChartTheme {
   if (typeof raw.crosshairMagnet === 'boolean') out.crosshairMagnet = raw.crosshairMagnet
   if (typeof raw.showWick === 'boolean') out.showWick = raw.showWick
   if (typeof raw.showBorder === 'boolean') out.showBorder = raw.showBorder
+  if (typeof raw.axisWeekday === 'boolean') out.axisWeekday = raw.axisWeekday
+  if (typeof raw.futureBars === 'number' && Number.isFinite(raw.futureBars)) {
+    out.futureBars = Math.min(FUTURE_BARS_MAX, Math.max(FUTURE_BARS_MIN, Math.round(raw.futureBars)))
+  }
   if (typeof raw.crosshairWidth === 'number' && (raw.crosshairWidth === 1 || raw.crosshairWidth === 2)) {
     out.crosshairWidth = raw.crosshairWidth
   }

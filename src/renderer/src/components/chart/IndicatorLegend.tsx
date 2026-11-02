@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
-import { X, RotateCcw } from 'lucide-react'
+import { X, RotateCcw, Eye, EyeOff } from 'lucide-react'
 import { useT, translateLabel } from '../../i18n'
 import type { IChartApi, ISeriesApi, MouseEventParams } from 'lightweight-charts'
 import {
@@ -30,6 +30,8 @@ export interface IndicatorRow {
   title: string
   format: 'volume' | 'price' | 'plain'
   segs: IndicatorRowSeg[]
+  /** 小眼睛关掉了：不画线、也不占副图，但图例上仍留一个暗色的名字 */
+  hidden?: boolean
 }
 
 interface Props {
@@ -43,6 +45,8 @@ interface Props {
   onColor?: (kind: IndicatorKind, uid: string, slot: string, color: string) => void
   onReset?: (kind: IndicatorKind, uid: string) => void
   onRemove?: (kind: IndicatorKind, uid: string) => void
+  /** 小眼睛：隐藏 / 重新显示 */
+  onHidden?: (kind: IndicatorKind, uid: string, hidden: boolean) => void
 }
 
 /** 读数格式化：成交量类用 K/M 缩写，价格按品种精度，其余两位小数 */
@@ -79,7 +83,8 @@ export function IndicatorLegend({
   onParams,
   onColor,
   onReset,
-  onRemove
+  onRemove,
+  onHidden
 }: Props): React.JSX.Element | null {
   const [open, setOpen] = useState<{ kind: IndicatorKind; uid: string } | null>(null)
   /** 十字线所在时刻各条线的值；null = 鼠标不在图上 */
@@ -181,8 +186,17 @@ export function IndicatorLegend({
   if (rows.length === 0) return null
 
   const current = open ? rows.find((r) => r.kind === open.kind && r.inst.uid === open.uid) : undefined
-  const overlayRows = rows.filter((r) => r.pane === 0)
-  const subRows = rows.filter((r) => r.pane > 0)
+  /** 主图那一行（pane 0，正常显示） */
+  const mainOverlayRows = rows.filter((r) => r.pane === 0 && !r.hidden)
+  /**
+   * 被小眼睛关掉的指标。
+   *
+   * 副图隐藏后它自己的 pane 已经不建了，没地方挂 chip —— 统一排到主图那一行变暗显示，
+   * 位置稳定，用户随时能点回来。
+   */
+  const hiddenRows = rows.filter((r) => r.hidden)
+  const overlayRows = [...mainOverlayRows, ...hiddenRows]
+  const subRows = rows.filter((r) => r.pane > 0 && !r.hidden)
 
   const isActive = (row: IndicatorRow): boolean =>
     open != null && open.kind === row.kind && open.uid === row.inst.uid
@@ -229,6 +243,11 @@ export function IndicatorLegend({
                 onToggle={() =>
                   setOpen(isActive(row) ? null : { kind: row.kind, uid: row.inst.uid })
                 }
+                onToggleHidden={() => {
+                  // 隐藏之后参数面板没意义（线都不画了），顺手收起来
+                  if (isActive(row) && !row.hidden) setOpen(null)
+                  onHidden?.(row.kind, row.inst.uid, !row.hidden)
+                }}
                 onRemove={() => {
                   if (isActive(row)) setOpen(null)
                   onRemove?.(row.kind, row.inst.uid)
@@ -259,6 +278,10 @@ export function IndicatorLegend({
                 onToggle={() =>
                   setOpen(active ? null : { kind: row.kind, uid: row.inst.uid })
                 }
+                onToggleHidden={() => {
+                  if (active) setOpen(null)
+                  onHidden?.(row.kind, row.inst.uid, true)
+                }}
                 onRemove={() => {
                   if (active) setOpen(null)
                   onRemove?.(row.kind, row.inst.uid)
@@ -310,6 +333,7 @@ function IndicatorChip({
   values,
   digits,
   onToggle,
+  onToggleHidden,
   onRemove
 }: {
   row: IndicatorRow
@@ -317,11 +341,33 @@ function IndicatorChip({
   values: Record<string, number | null> | null
   digits: number
   onToggle: () => void
+  onToggleHidden: () => void
   onRemove: () => void
 }): React.JSX.Element {
   const { t } = useT()
+  const hidden = row.hidden === true
   return (
-    <div className="flex items-center rounded transition-colors">
+    <div
+      className={clsx(
+        'flex items-center rounded transition-opacity',
+        // 隐藏的指标整条压暗：一眼能看出「它在，只是没画」
+        hidden && 'opacity-45'
+      )}
+    >
+      <button
+        type="button"
+        onClick={onToggleHidden}
+        title={hidden ? t('ind.showHint') : t('ind.hideHint')}
+        aria-pressed={hidden}
+        className={clsx(
+          'rounded p-[1px] transition-colors hover:bg-[var(--surface-3)]',
+          hidden
+            ? 'text-[var(--text-faint)] hover:text-[var(--text-secondary)]'
+            : 'text-[var(--text-faint)] hover:text-[var(--text-primary)]'
+        )}
+      >
+        {hidden ? <EyeOff size={9} /> : <Eye size={9} />}
+      </button>
       <button
         type="button"
         onClick={onToggle}
@@ -334,7 +380,14 @@ function IndicatorChip({
         )}
       >
         <ColorBar id={row.inst.id as IndicatorId} colors={row.inst.colors} params={row.inst.params} />
-        <span className="font-mono text-[10.5px] leading-[15px]">{row.title}</span>
+        <span
+          className={clsx(
+            'font-mono text-[10.5px] leading-[15px]',
+            hidden && 'line-through decoration-[var(--text-faint)]'
+          )}
+        >
+          {row.title}
+        </span>
         <RowValues row={row} values={values} digits={digits} />
       </button>
       <button

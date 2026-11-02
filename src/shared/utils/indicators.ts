@@ -268,6 +268,13 @@ export interface IndicatorInstance {
   params: Record<string, number>
   /** 自定义线色，键是 ColorSlot.slot；没设过的槽位用默认色 */
   colors?: Record<string, string>
+  /**
+   * 图例上点了「小眼睛」= 暂时不画。
+   *
+   * 只是不显示：参数、颜色、副图位置都留着，点回来还是原来那条线；
+   * 和「移除」是两回事（那个会连配置一起删掉）。
+   */
+  hidden?: boolean
 }
 
 export type IndicatorParams = Partial<Record<IndicatorId, Record<string, number>>>
@@ -303,9 +310,10 @@ export const OVERLAYS: (IndicatorDef<OverlayId> & { color: string })[] = [
     label: 'EMA 均线',
     color: EMA_COLORS[0],
     params: [
-      { key: 'p1', label: '周期1', min: 0, max: 500, step: 1, zeroOff: true },
-      { key: 'p2', label: '周期2', min: 0, max: 500, step: 1, zeroOff: true },
-      { key: 'p3', label: '周期3', min: 0, max: 500, step: 1, zeroOff: true }
+      // 上限给到 2000：长周期均线（如 MA2000）用来当牛熊分界线，500 不够用
+      { key: 'p1', label: '周期1', min: 0, max: 2000, step: 1, zeroOff: true },
+      { key: 'p2', label: '周期2', min: 0, max: 2000, step: 1, zeroOff: true },
+      { key: 'p3', label: '周期3', min: 0, max: 2000, step: 1, zeroOff: true }
     ],
     defaults: { p1: 12, p2: 26, p3: 0 }
   },

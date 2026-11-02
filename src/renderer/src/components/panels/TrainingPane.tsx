@@ -29,7 +29,8 @@ import {
   RotateCcw,
   AlertTriangle,
   ArrowLeft,
-  PanelRight
+  PanelRight,
+  GripVertical
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useHotkeys } from 'react-hotkeys-hook'
@@ -50,6 +51,7 @@ import { ReplayChart, type PendingOrderView } from '../chart/ReplayChart'
 import { SecondaryChart } from '../chart/SecondaryChart'
 import { TradeMetaDialog } from './TradeMetaDialog'
 import { useTrainingClock } from '../../hooks/use-training-clock'
+import { useDraggable } from '../../hooks/use-draggable'
 import { DateRangePicker } from '../common/DateRangePicker'
 import { TagFilter, useTagFilter } from '../common/TagFilter'
 import { TrainingReport } from './TrainingReport'
@@ -264,6 +266,12 @@ export function TrainingPane(): React.JSX.Element {
   const setIndicatorParams = useTrainingStore((s) => s.setIndicatorParams)
   const setIndicatorColor = useTrainingStore((s) => s.setIndicatorColor)
   const resetIndicatorParams = useTrainingStore((s) => s.resetIndicatorParams)
+  const setIndicatorHidden = useTrainingStore((s) => s.setIndicatorHidden)
+  /**
+   * 图表左上角那条画图工具条的位置。
+   * 默认贴左上 (8,8)，拖过之后记住 —— 挡住副图/均线的时候随手挪开，不用忍着。
+   */
+  const drawBar = useDraggable({ storageKey: 'rw.chart.drawBarPos' })
   const focusedTrade = useTrainingStore((s) => s.focusedTrade)
   const focusSeq = useTrainingStore((s) => s.focusSeq)
   const completedAt = useTrainingStore((s) => s.completedAt)
@@ -1219,8 +1227,26 @@ export function TrainingPane(): React.JSX.Element {
     return { total, winRate, count: closedTrades.length }
   }, [closedTrades])
 
+  /**
+   * 「归位」：把视野拉回当前已经走出来的最后一根 K 线。
+   *
+   * 不能直接 scrollToRealTime —— 右边预留了未来空白，那样会滚到一片没有 K 线的
+   * 时间轴上，等于把行情推出了屏幕。这里保持视野宽度不变，只把右端挪到
+   * 「游标 + 几根」的位置，K 线仍然贴在右边，跟平时回放推进时的版式一致。
+   */
+  const scrollToLatest = useCallback(() => {
+    const chart = mainChart
+    if (!chart) return
+    const ts = chart.timeScale()
+    const r = ts.getVisibleLogicalRange()
+    const span =
+      r && Number.isFinite(r.from) && Number.isFinite(r.to) ? Math.max(20, r.to - r.from) : 110
+    const to = Math.max(0, cursor) + 7
+    ts.setVisibleLogicalRange({ from: to - span, to })
+  }, [mainChart, cursor])
+
   useHotkeys(
-    'space',
+    'enter',
     (e) => {
       e.preventDefault()
       // 备注浮窗开着时不响应：否则会在弹窗背后偷偷开始/暂停回放
@@ -1229,7 +1255,17 @@ export function TrainingPane(): React.JSX.Element {
     },
     [activeSession, togglePlay, orderSide, orderDraft]
   )
-  // 回放控制：Shift+→ 逐根前进、空格 播放/暂停
+  // 空格 = 归位到最新一根；播放/暂停挪到「回车」上（原来占着空格的正是它）
+  useHotkeys(
+    'space',
+    (e) => {
+      e.preventDefault()
+      if (orderSide || orderDraft) return
+      if (activeSession) scrollToLatest()
+    },
+    [activeSession, scrollToLatest, orderSide, orderDraft]
+  )
+  // 回放控制：Shift+→ 逐根前进、回车 播放/暂停
   // 回测不允许回退（不提供「上一根」），避免用户反悔已发生的行情
   useHotkeys(
     'shift+arrowright',
@@ -2010,9 +2046,27 @@ export function TrainingPane(): React.JSX.Element {
               开了双周期之后这里是横向 flex：主图 flex-1，副窗固定宽度贴在右边。
               浮动工具条和提示都是 absolute，不参与 flex 分配，位置不变。
             */}
-            <div className="relative flex min-h-0 min-w-0 flex-1">
-              {/* 图表浮动工具条（贴在图表左上角，不挡住 K 线主体） */}
-              <div className="absolute left-2 top-2 z-20 flex items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-1)]/92 p-0.5 shadow-lg backdrop-blur">
+            <div
+              ref={drawBar.containerRef}
+              className="relative flex min-h-0 min-w-0 flex-1"
+            >
+              {/* 图表浮动工具条（默认贴左上角，可拖到任意位置；位置会记住） */}
+              <div
+                ref={drawBar.panelRef}
+                style={drawBar.style}
+                {...drawBar.handlers}
+                className={clsx(
+                  'absolute z-20 flex items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-1)]/92 p-0.5 shadow-lg backdrop-blur',
+                  drawBar.dragging ? 'cursor-grabbing select-none' : 'cursor-grab'
+                )}
+              >
+                <span
+                  onDoubleClick={drawBar.reset}
+                  title={t('training.toolbarDrag')}
+                  className="flex h-6 w-3.5 shrink-0 cursor-grab items-center justify-center text-[var(--text-faint)] active:cursor-grabbing"
+                >
+                  <GripVertical size={11} />
+                </span>
                 <button
                   onClick={() => setTool(null)}
                   title={t('training.cursor')}
@@ -2112,6 +2166,7 @@ export function TrainingPane(): React.JSX.Element {
                   onIndicatorColor={setIndicatorColor}
                   onIndicatorReset={resetIndicatorParams}
                   onIndicatorRemove={removeIndicator}
+                  onIndicatorHidden={setIndicatorHidden}
                   drawings={drawings}
                   onDrawingsChange={setDrawings}
                   activeTool={tool}
@@ -2728,8 +2783,12 @@ export function TrainingPane(): React.JSX.Element {
                 </span>
               </span>
               <span className="flex items-center gap-1.5">
-                <Kbd>Space</Kbd>
+                <Kbd>Enter</Kbd>
                 {t('training.playPause')}
+              </span>
+              <span className="flex items-center gap-1.5" title={t('training.scrollLatest')}>
+                <Kbd>Space</Kbd>
+                {t('training.backToLatest')}
               </span>
               <span className="flex items-center gap-1.5">
                 <Kbd>←</Kbd>

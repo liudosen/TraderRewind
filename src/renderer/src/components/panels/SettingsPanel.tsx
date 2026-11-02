@@ -37,6 +37,8 @@ import { LOCALE_OPTIONS } from '@shared/types/locale'
 import {
   CROSSHAIR_STYLES,
   THEME_PRESETS,
+  FUTURE_BARS_MIN,
+  FUTURE_BARS_MAX,
   type CrosshairStyle
 } from '@shared/types/chart-theme'
 
@@ -628,6 +630,40 @@ export function SettingsPanel(): React.JSX.Element {
               checked={chartTheme.showWick}
               onChange={(v) => patchTheme({ showWick: v })}
             />
+            <ToggleRow
+              label={t('settings.chart.axisWeekday')}
+              checked={chartTheme.axisWeekday}
+              onChange={(v) => patchTheme({ axisWeekday: v })}
+            />
+            {/* 未来空白：只放出时间刻度、不放 K 线，用来把线画到未来 */}
+            <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+              <span
+                className="shrink-0 text-[12px] text-[var(--text-secondary)]"
+                title={t('settings.chart.futureBarsHint')}
+              >
+                {t('settings.chart.futureBars')}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  value={chartTheme.futureBars}
+                  min={FUTURE_BARS_MIN}
+                  max={FUTURE_BARS_MAX}
+                  step={10}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    if (!Number.isFinite(v)) return
+                    patchTheme({
+                      futureBars: Math.min(FUTURE_BARS_MAX, Math.max(FUTURE_BARS_MIN, Math.round(v)))
+                    })
+                  }}
+                  className="h-6 w-16 rounded border border-[var(--border-subtle)] bg-[var(--surface-2)] px-1.5 text-right font-mono text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--c-accent)]"
+                />
+                <span className="text-[10.5px] text-[var(--text-faint)]">
+                  {t('settings.chart.futureBarsUnit')}
+                </span>
+              </div>
+            </div>
             <ToggleRow
               label={t('settings.chart.showBorder')}
               checked={chartTheme.showBorder}

@@ -130,6 +130,11 @@ const baseZh = {
   'settings.chart.crosshairMagnet': '十字线吸附到 K 线',
   'settings.chart.showWick': '显示 K 线影线',
   'settings.chart.showBorder': '显示 K 线边框',
+  'settings.chart.axisWeekday': '时间轴显示星期',
+  'settings.chart.futureBars': '右侧未来空白',
+  'settings.chart.futureBarsUnit': '根',
+  'settings.chart.futureBarsHint':
+    '右侧预留多少根「未来」空间。这段里只有时间刻度、没有 K 线，可以把趋势线 / 预测线画到未来；0 = 不允许拖到未来',
 
   'settings.about.title': '关于',
   'settings.about.version': '版本',
@@ -298,6 +303,8 @@ const baseZh = {
   // ── 指标图例 / 参数面板 ────────────────────────────
   'ind.paramsHint': '点击设置参数 / 颜色',
   'ind.removeHint': '移除这个指标',
+  'ind.hideHint': '隐藏这个指标（参数会留着）',
+  'ind.showHint': '重新显示这个指标',
   'ind.collapse': '收起',
   'ind.noParams': '这个指标没有可调参数。',
   'ind.zeroOff': '0=关',
@@ -475,6 +482,11 @@ const baseEn: Record<keyof typeof baseZh, string> = {
   'settings.chart.crosshairMagnet': 'Snap crosshair to candles',
   'settings.chart.showWick': 'Show wicks',
   'settings.chart.showBorder': 'Show candle borders',
+  'settings.chart.axisWeekday': 'Show weekday on time axis',
+  'settings.chart.futureBars': 'Future space on the right',
+  'settings.chart.futureBarsUnit': 'bars',
+  'settings.chart.futureBarsHint':
+    'How many bars of empty space to keep on the right. It has time labels but no candles, so you can draw trend or forecast lines into the future; 0 = no scrolling past the last bar',
 
   'settings.about.title': 'About',
   'settings.about.version': 'Version',
@@ -640,6 +652,8 @@ const baseEn: Record<keyof typeof baseZh, string> = {
 
   'ind.paramsHint': 'Click to edit parameters and colours',
   'ind.removeHint': 'Remove this indicator',
+  'ind.hideHint': 'Hide this indicator (settings are kept)',
+  'ind.showHint': 'Show this indicator again',
   'ind.collapse': 'Collapse',
   'ind.noParams': 'This indicator has no adjustable parameters.',
   'ind.zeroOff': '0=off',

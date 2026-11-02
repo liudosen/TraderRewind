@@ -56,6 +56,8 @@ export interface TzParts {
   hour: number
   minute: number
   second: number
+  /** 星期几：0 = 周日，1 = 周一 … 6 = 周六（按目标时区的墙上时间算） */
+  weekday: number
 }
 
 const MINUTE = 60_000
@@ -74,7 +76,8 @@ export function tzPartsFromSec(sec: number, tz: unknown): TzParts {
     day: d.getUTCDate(),
     hour: d.getUTCHours(),
     minute: d.getUTCMinutes(),
-    second: d.getUTCSeconds()
+    second: d.getUTCSeconds(),
+    weekday: d.getUTCDay()
   }
 }
 
@@ -87,7 +90,8 @@ export function tzPartsFromMs(ms: number, tz: unknown): TzParts {
     day: d.getUTCDate(),
     hour: d.getUTCHours(),
     minute: d.getUTCMinutes(),
-    second: d.getUTCSeconds()
+    second: d.getUTCSeconds(),
+    weekday: d.getUTCDay()
   }
 }
 
