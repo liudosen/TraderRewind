@@ -356,13 +356,15 @@ export function SecondaryChart({
           color: t0.crosshairColor,
           width: t0.crosshairWidth,
           style: t0.crosshairStyle,
-          labelVisible: false
+          // 底部时间轴要显示十字线对应的时刻，不能只画线不标时间
+          labelVisible: t0.crosshairLabels,
+          labelBackgroundColor: '#2a2a2a'
         },
         horzLine: {
           color: t0.crosshairColor,
           width: t0.crosshairWidth,
           style: t0.crosshairStyle,
-          labelVisible: true,
+          labelVisible: t0.crosshairLabels,
           labelBackgroundColor: '#2a2a2a'
         }
       },
@@ -420,8 +422,20 @@ export function SecondaryChart({
       },
       crosshair: {
         mode: theme.crosshairMagnet ? 1 : 0,
-        vertLine: { color: theme.crosshairColor, width: theme.crosshairWidth, style: theme.crosshairStyle },
-        horzLine: { color: theme.crosshairColor, width: theme.crosshairWidth, style: theme.crosshairStyle }
+        vertLine: {
+          color: theme.crosshairColor,
+          width: theme.crosshairWidth,
+          style: theme.crosshairStyle,
+          labelVisible: theme.crosshairLabels,
+          labelBackgroundColor: '#2a2a2a'
+        },
+        horzLine: {
+          color: theme.crosshairColor,
+          width: theme.crosshairWidth,
+          style: theme.crosshairStyle,
+          labelVisible: theme.crosshairLabels,
+          labelBackgroundColor: '#2a2a2a'
+        }
       }
     })
     seriesRef.current?.applyOptions({
