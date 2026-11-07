@@ -71,8 +71,10 @@ interface Props {
    * 参数就是「按哪个 series 的价格轴来定位」，光有时间轴画不出横线。
    */
   mainSeries: ISeriesApi<'Candlestick'> | null
-  /** 这个窗口是不是「选中的那个」：只影响描边和快捷键落点，跟时间同步无关 */
+  /** 这个窗口是不是「选中的那个」：只影响描边、快捷键落点和播放时的独立性 */
   active: boolean
+  /** 回放是不是正在播放：副窗自己驱动播放时，主图不要被它的时间范围带走 */
+  playing: boolean
   /**
    * 要不要跟随主窗口的时间范围。
    * 开：两边双向同步（在哪个窗口拖，另一个都跟着走）。
@@ -189,6 +191,7 @@ export function SecondaryChart({
   mainChart,
   mainSeries,
   active,
+  playing,
   follow,
   label,
   trades,
@@ -263,6 +266,11 @@ export function SecondaryChart({
   /** 当前是不是在跟随主图（进 ref，免得数据 effect / 订阅回调因为开关变化重跑） */
   const followRef = useRef(follow)
   followRef.current = follow
+  /** 当前选中的窗口 / 是否正在播放：副窗自己驱动播放时，主图 ↔ 副窗互不同步 */
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const playingRef = useRef(playing)
+  playingRef.current = playing
   /** 主图进 ref：alignToMain 挂在 rAF 里，闭包读不到最新 props */
   const mainChartRef = useRef<IChartApi | null>(mainChart)
   mainChartRef.current = mainChart
@@ -1282,8 +1290,9 @@ export function SecondaryChart({
     }
 
     // 同一次回放：跟随窗口贴边时跟着新增根数平移；独立/历史区原样钉死
+    const selfDriving = playingRef.current && activeRef.current
     const followMainLive = followRef.current && mainAtLiveEdge()
-    if (followMainLive) {
+    if (followMainLive || selfDriving) {
       /**
        * 主图在播最新：不要按主图的桶时间对齐，直接以本窗自己的最新一根落位。
        * 主图 M30、副窗 M1 时，主图右端可能只到 15:30，副窗已经有 15:55，
@@ -1321,6 +1330,8 @@ export function SecondaryChart({
 
     const onSelf = (): void => {
       if (performance.now() < muteRef.current.self) return
+      // 副窗自己驱动播放时，主图保持独立，不接受副窗的时间范围
+      if (playingRef.current && activeRef.current) return
       if (!followRef.current) return
       const r = readRange(selfTs)
       if (!r) return
@@ -1328,6 +1339,8 @@ export function SecondaryChart({
     }
     const onMain = (): void => {
       if (performance.now() < muteRef.current.main) return
+      // 副窗在驱动播放时也不让主图把它拉回自己的范围
+      if (playingRef.current && activeRef.current) return
       if (!followRef.current) return
       const r = readRange(mainTs)
       if (!r) return

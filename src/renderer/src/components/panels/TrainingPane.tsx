@@ -2365,6 +2365,8 @@ export function TrainingPane(): React.JSX.Element {
                   focusSeq={focusSeq}
                   // 选中副窗时由副窗定位（各窗的「150 根」跨度不同，不能同时定位）
                   focusTarget={!activeSub}
+                  // 副窗正在驱动播放时，主图保持自己的范围，不跟副窗变
+                  freezeView={playing && activeSub != null}
                   onClearFocus={() => setFocusedTrade(null)}
                   // 待确认单只画在“当前选中的窗口”：选中副窗时主图不再显示票面
                   pendingOrder={activeSub ? null : pendingView}
@@ -2437,6 +2439,8 @@ export function TrainingPane(): React.JSX.Element {
                             mainChart={mainChart}
                             mainSeries={mainSeries}
                             active={activePane === sub.id}
+                            // 副窗自己驱动播放时，主图保持独立，不跟它的时间范围
+                            playing={playing && activePane === sub.id}
                             // 跟随主图时间范围（每个窗口单独设）
                             follow={sub.follow}
                             label={t('chart.subPaneLabel', { n: i + 2 })}
