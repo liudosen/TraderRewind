@@ -863,6 +863,14 @@ export function ReplayChart({
    * 用时间戳挡住这段自激：一次续长之后 250ms 内不再续。
    */
   const futureGrowAtRef = useRef(0)
+  /**
+   * 鼠标 / 手指是不是正按在图上。
+   *
+   * 播放推进时会重铺数据并（为了抵消 lightweight-charts 的右偏移漂移）把视野钉回原位；
+   * 但用户正在拖动时，这一钉会把他刚拖出来的位置抢回去。拖动期间先放过，
+   * 松手后的下一格再按新位置钉住。
+   */
+  const pointerDownRef = useRef(false)
 
   const containerRef = useRef<HTMLDivElement>(null)
   /** 最外层容器：用来量「主图指标图例占了多高」（提示条要排在它下面） */
@@ -1721,6 +1729,7 @@ export function ReplayChart({
     let pointerDown = false
     const markDown = () => {
       pointerDown = true
+      pointerDownRef.current = true
     }
     /**
      * 松手：把拖动期间搁置的续长补上。
@@ -1729,6 +1738,7 @@ export function ReplayChart({
      */
     const markUp = () => {
       pointerDown = false
+      pointerDownRef.current = false
       if (!growPending) return
       growPending = false
       growAndRestore()
@@ -1850,6 +1860,7 @@ export function ReplayChart({
       // 图重建了，未来占位要从设置值重新铺
       futureAheadRef.current = 0
       futureGrowAtRef.current = 0
+      pointerDownRef.current = false
     }
     // growFuture 是稳定引用（内部只读 ref），放进依赖不会导致整张图重建
   }, [growFuture])
@@ -1956,6 +1967,16 @@ export function ReplayChart({
      */
     const tfChanged = tfRef.current !== timeframe
     const prevWindow = tfChanged ? (userWindowRef.current ?? readVisibleWindow(chart)) : null
+    /**
+     * 这一格推进之前用户在看哪几根。
+     *
+     * 播放推进必须**一根都不动**：不管窗口贴不贴最右边，都不许自己追最新。
+     * setData / update 之后 lightweight-charts 会拿“新的最后一根”重算右偏移，
+     * 为了确保视野一点不差，先把逻辑范围记下来，数据灌完再原样设回去。
+     *
+     * 换回测集 / 切周期不走这条还原：那两个分支本来就要重新定位到一段有意义的窗口。
+     */
+    const prevLogical = chart.timeScale().getVisibleLogicalRange()
 
     if (appendedOne) {
       const bar = partialBar ?? bars[cursor]
@@ -1966,19 +1987,6 @@ export function ReplayChart({
         low: bar.low,
         close: bar.close
       })
-      const range = chart.timeScale().getVisibleLogicalRange()
-      if (range && visibleCount > range.to - 3) {
-        /**
-         * 跟着新 K 线右移，但保持当前视野宽度。
-         *
-         * 不能用 scrollToPosition(0)：那是「滚到最右」，而最右边现在是预留的未来空白，
-         * 一滚 K 线就被推到屏幕外，只剩一片空时间轴。
-         */
-        const span = Math.max(10, range.to - range.from)
-        const to = visibleCount + 3
-        autoRangeAtRef.current = performance.now()
-        chart.timeScale().setVisibleLogicalRange({ from: to - span, to })
-      }
     } else {
       const data: CandlestickData[] = []
       for (let i = 0; i < visibleCount; i++) {
@@ -2043,7 +2051,7 @@ export function ReplayChart({
 
         autoRangeAtRef.current = performance.now()
         chart.timeScale().setVisibleLogicalRange({ from, to })
-      } else if (!sameDataset || Math.abs(visibleCount - prevLenRef.current) > 2) {
+      } else if (!sameDataset) {
         const pad = rightPad(visibleCount)
         autoRangeAtRef.current = performance.now()
         chart.timeScale().setVisibleLogicalRange({
@@ -2056,12 +2064,34 @@ export function ReplayChart({
     prevLenRef.current = visibleCount
     prevBarsRef.current = bars
     /**
-     * 主图推进后重铺未来时间点：窗口跟着往右挪，占位的时间也要跟着往后接。
+     * 主图推进后重铺未来时间点：占位的时间要接着最后一根往后排。
      *
-     * 换数据 / 换周期时重置回设置值 —— 上一份数据上拖出来的几十万根未来
+     * 注意：重铺会让时间轴末端跟着最后一根后移，即使 rightOffset 不变，
+     * 画面也会整体右移一格 —— 所以下面紧接着要把视野钉回原位。
+     * 换数据 / 换周期时重置回设置值：上一份数据上拖出来的几十万根未来
      * 跟这份数据无关，留着只会让占位点到很远的过去或未来去。
      */
     refreshFuture(tfChanged || !sameDataset)
+
+    /**
+     * 同一次回放里的数据推进：把视野原样钉回去。
+     *
+     * 数据更新（setData / update / 重铺未来占位）都可能让图表按新的最后一根
+     * 重新落定右偏移。这里统一在最后把逻辑范围设回更新前的值：
+     * 不管这一格走了 1 根还是 30 根（选中 M30 副窗时主图 M5 一步会走 6 根），
+     * 视野都保持原位；只有换回测集 / 切周期才允许重新定位。
+     */
+    if (sameDataset && !tfChanged && prevLogical && !pointerDownRef.current) {
+      autoRangeAtRef.current = performance.now()
+      chart.timeScale().setVisibleLogicalRange({ from: prevLogical.from, to: prevLogical.to })
+      requestAnimationFrame(() => {
+        if (pointerDownRef.current) return
+        const c = chartRef.current
+        if (!c) return
+        c.timeScale().setVisibleLogicalRange({ from: prevLogical.from, to: prevLogical.to })
+      })
+    }
+
     redrawRef.current()
   }, [bars, cursor, partialBar])
 

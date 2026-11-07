@@ -752,6 +752,8 @@ export function TrainingPane(): React.JSX.Element {
     if (!saved || saved === 'main') return 'main'
     return subCharts.some((s) => s.id === saved) ? saved : 'main'
   })
+  /** 空格「归位」的序号：只让当前选中的那个窗口把视野拉回最新一根 */
+  const [recenterSeq, setRecenterSeq] = useState(0)
   /** 主图实例：副窗要跟它同步时间范围，只能靠 ReplayChart 递出来 */
   const [mainChart, setMainChart] = useState<IChartApi | null>(null)
   /**
@@ -1412,6 +1414,11 @@ export function TrainingPane(): React.JSX.Element {
    * 「游标 + 几根」的位置，K 线仍然贴在右边，跟平时回放推进时的版式一致。
    */
   const scrollToLatest = useCallback(() => {
+    // 选中副窗时归位的是副窗 —— 否则按空格画面一动不动，用户会以为快捷键坏了
+    if (activeSub) {
+      setRecenterSeq((n) => n + 1)
+      return
+    }
     const chart = mainChart
     if (!chart) return
     const ts = chart.timeScale()
@@ -1420,7 +1427,7 @@ export function TrainingPane(): React.JSX.Element {
       r && Number.isFinite(r.from) && Number.isFinite(r.to) ? Math.max(20, r.to - r.from) : 110
     const to = Math.max(0, cursor) + 7
     ts.setVisibleLogicalRange({ from: to - span, to })
-  }, [mainChart, cursor])
+  }, [activeSub, mainChart, cursor])
 
   useHotkeys(
     'enter',
@@ -2428,6 +2435,7 @@ export function TrainingPane(): React.JSX.Element {
                             focusedTrade={focusedTrade}
                             focusSeq={focusSeq}
                             followFocus={activePane === sub.id}
+                            recenterSeq={recenterSeq}
                             onTimeframeChange={(tf) => setSubTf(sub.id, tf)}
                             onToggleFollow={() => toggleSubFollow(sub.id)}
                             onClose={() => removeSubChart(sub.id)}

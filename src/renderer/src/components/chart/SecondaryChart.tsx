@@ -33,7 +33,8 @@ import {
   aggregateBars,
   indexAtTime,
   timeframeCode,
-  timeframeName
+  timeframeName,
+  timeframeSeconds
 } from '@shared/utils/timeframe'
 import { DEFAULT_CHART_THEME } from '@shared/types/chart-theme'
 import { useChartThemeStore } from '../../stores/chart-theme-store'
@@ -78,6 +79,11 @@ interface Props {
   focusSeq: number
   /** 这一笔要不要由本窗去定位（= 本窗是选中的那个） */
   followFocus: boolean
+  /**
+   * 「归位」信号：主窗口按空格 / 点归位时 +1。
+   * 只有收到信号的那个副窗把视野拉回最新一根 —— 播放过程中绝不自己动。
+   */
+  recenterSeq: number
   onTimeframeChange: (tf: string) => void
   /** 点抬头那个「跟随 / 独立」按钮 */
   onToggleFollow: () => void
@@ -93,6 +99,20 @@ type TimeScaleLike = ITimeScaleApi<Time>
  * 一次真实拖动也吞掉。
  */
 const SYNC_MUTE_MS = 150
+/** 第一次落图 / 换回测集时，默认给多少根 K 线的视野 */
+const DEFAULT_VISIBLE_BARS = 80
+/**
+ * 「最新一根」右侧预留大约多少**时间**。
+ *
+ * 两个作用：
+ *  1) rightOffset=0 会把最后一根**中心**顶在右边界上，留白后最新一根完整可见；
+ *  2) 播放时视野完全不动（不自动跟随），新 K 线只会慢慢填进这段留白，
+ *     20 分钟内最新一根仍然在窗口里，不会“刚播几根就溢出到窗户外”。
+ *
+ * 换算成根数时按周期夹在 2~20 根：M1 是 20 根，M30/H1 只留 2 根，
+ * 不会让粗周期窗口右边空出一大段。
+ */
+const LIVE_MARGIN_SECONDS = 20 * 60
 
 /** 读某个时间轴当前的可视范围；还算不出来时给 null */
 function readRange(ts: TimeScaleLike): Range | null {
@@ -106,6 +126,20 @@ function readRange(ts: TimeScaleLike): Range | null {
 
 function pushRange(ts: TimeScaleLike, r: Range): void {
   ts.setVisibleRange({ from: r.from as UTCTimestamp, to: r.to as UTCTimestamp })
+}
+
+/** 按周期算右侧留白根数：M1 约 20 根，M5 约 4 根，M30 以上至少 2 根 */
+function latestRightPad(tf: string): number {
+  const secs = timeframeSeconds(tf)
+  if (secs <= 0) return 2
+  return Math.max(2, Math.min(20, Math.round(LIVE_MARGIN_SECONDS / secs)))
+}
+
+/** 把视野落到「最新一根 + 右侧留白」，保持原来的根数（夹在合理范围内） */
+function latestLogicalRange(lastIndex: number, span: number, pad: number): Range {
+  const n = Math.max(1, Math.min(2000, Math.round(span)))
+  const to = lastIndex + pad
+  return { from: Math.max(0, to - n), to }
 }
 
 export function SecondaryChart({
@@ -123,6 +157,7 @@ export function SecondaryChart({
   focusedTrade,
   focusSeq,
   followFocus,
+  recenterSeq,
   onTimeframeChange,
   onToggleFollow,
   onClose
@@ -138,17 +173,17 @@ export function SecondaryChart({
   /** 上一批数据的第一根时间 / 根数：用来判断「只是最后一根在走」还是「换了一批」 */
   const firstTimeRef = useRef(0)
   const lenRef = useRef(0)
+  /**
+   * 上一份 1 分钟源数据的引用。
+   * 播放推进时 rawBars 是同一个数组；只有换会话 / 重新载入才会换引用 ——
+   * 用它区分「新数据要落到最新」和「同一次回放里继续推进，视野必须钉住」。
+   */
+  const prevRawBarsRef = useRef<Bar[] | null>(null)
   /** 这些数据是灌给哪个 series 的。图表重建过（StrictMode 双挂载）就必须整批重灌 */
   const ownerRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   /** 当前是不是在跟随主图（进 ref，免得数据 effect / 订阅回调因为开关变化重跑） */
   const followRef = useRef(follow)
   followRef.current = follow
-  /**
-   * 这个窗口是不是「正在被播放的那个」（= 用户选中的那个）。
-   * 只有它会跟着新 K 线往前滚；其它窗口各看各的，步进一根就动一下等于互相打架。
-   */
-  const activeRef = useRef(active)
-  activeRef.current = active
   /** 主图进 ref：alignToMain 挂在 rAF 里，闭包读不到最新 props */
   const mainChartRef = useRef<IChartApi | null>(mainChart)
   mainChartRef.current = mainChart
@@ -583,6 +618,28 @@ export function SecondaryChart({
     if (range) chart.timeScale().setVisibleLogicalRange(range)
   }, [focusedTrade?.id, focusSeq, followFocus])
 
+  /**
+   * 手动「归位」：只有收到 recenterSeq 的那个窗口把视野拉回最新一根。
+   *
+   * 播放过程中的数据 effect 一根都不动；用户想回最新时按空格，落点就是这里。
+   * 保留当前根数，右边按周期留一点空白，确保最新 K 线完整落在窗口内。
+   */
+  const seenRecenterRef = useRef(recenterSeq)
+  useEffect(() => {
+    if (recenterSeq === seenRecenterRef.current) return
+    seenRecenterRef.current = recenterSeq
+    // 三个窗口都收到同一个序号，但只有当前选中的那个负责动
+    if (!active) return
+    const chart = chartRef.current
+    const list = barsRef.current
+    if (!chart || list.length === 0) return
+    const r = chart.timeScale().getVisibleLogicalRange()
+    const span = r ? r.to - r.from : DEFAULT_VISIBLE_BARS
+    const next = latestLogicalRange(list.length - 1, span, latestRightPad(timeframe))
+    muteRef.current.self = 0
+    chart.timeScale().setVisibleLogicalRange(next)
+  }, [active, recenterSeq, timeframe])
+
   // ---------- 时间范围同步：主图是唯一的基准，跟随它的窗口围着它转 ----------
   /**
    * 程序化推送的「静默窗」：推给哪个窗口，就在接下来这段时间里把它的变化当成自己的回声吞掉。
@@ -625,37 +682,21 @@ export function SecondaryChart({
   }, [pushToSelf])
 
   /**
-   * 不跟随的窗口：把用户自己摆好的视野钉住。
+   * 把视野原样钉住。
    *
-   * 只有「正在被播放的那个窗口」贴在最右边时才会跟着新 K 线往前滚（见下面的数据 effect），
-   * 其它窗口一步进就动视野，等于把「独立」做成了「自动对齐最新」。这里负责把它们按回去。
+   * 这里用**逻辑范围**（第几根到第几根），不用时间范围：
+   * 逻辑范围就是“我正在看这几十根”，`setData` 之后原样设回去即可，
+   * 不受右偏移重算、时间轴夹取的影响；新 K 线来了就老老实实呆在右边外面 ——
+   * 这才叫“不自动跟随”。
    */
-  const pinRange = useCallback(
-    (r: Range): void => {
-      const chart = chartRef.current
-      if (!chart || followRef.current) return
-      const cur = readRange(chart.timeScale())
-      // 已经在原来的位置（1 秒以内算同一段）就不用再推，省得和用户正在进行的拖拽打架
-      if (cur && Math.abs(cur.from - r.from) < 1 && Math.abs(cur.to - r.to) < 1) return
-      pushToSelf(r)
-    },
-    [pushToSelf]
-  )
-
-  /**
-   * 窗口是不是贴着最右边（= 正在看最新那根）。
-   *
-   * `scrollPosition()` 的单位是「根」，贴着最右边是 0；往回翻是**负数**
-   * （前景留白才会是正数），所以这里取绝对值 —— 直接写 `<= 0` 会把「往回翻了十几根」
-   * 当成贴边，一有新 K 线就把它拽回最新。
-   */
-  const atLiveEdge = useCallback((): boolean => {
+  const pinLogicalRange = useCallback((r: Range): void => {
     const chart = chartRef.current
-    if (!chart) return false
-    return Math.abs(chart.timeScale().scrollPosition()) <= 0.5
+    if (!chart) return
+    muteRef.current.self = performance.now() + SYNC_MUTE_MS
+    chart.timeScale().setVisibleLogicalRange({ from: r.from, to: r.to })
   }, [])
 
-  // 数据换了一批：先灌数据，再把视野摆回去
+  // 数据换了一批：先灌数据，再把视野按原样钉住（或落到最新）
   useEffect(() => {
     const series = seriesRef.current
     const chart = chartRef.current
@@ -679,7 +720,7 @@ export function SecondaryChart({
     ownerRef.current = series
     /**
      * 只是最后一根在往前走（回放每推进一格就一次）：
-     * 就地 update，别 setData —— setData 会把视野拽回去，等于每秒抢一次用户的平移。
+     * 就地 update，不碰时间轴，也不碰视野。
      */
     if (!freshChart && lenRef.current === bars.length && firstTimeRef.current === head) {
       series.update(toCandle(tail))
@@ -688,35 +729,44 @@ export function SecondaryChart({
     }
 
     /**
-     * 灌新数据前先记两件事（都是「这一刻」的状态，setData 之后就不作数了）：
-     *  · keep：不跟随的窗口现在看的是哪一段；
-     *  · followEdge：它是不是「正在被播放、而且正贴着最右边」。
+     * setData 之前先记下当前视野（逻辑范围）和这份源数据是不是换过。
      *
-     * 只有正在被播放的那个窗口贴边时跟着新 K 线往前走（否则新 K 线会从右边溢出去，
-     * 看不到正在播放的那根）；其它窗口一律原地不动 —— 一步进就动别人的视野，
-     * 等于把「独立」变成了「自动对齐最新」。
+     *  · 同一次回放里继续推进：把逻辑范围原样设回去 —— 用户看的是哪几根就还是哪几根，
+     *    新 K 线只会出现在右边外面，绝不会把窗口一路往最新推；
+     *  · 第一次落图 / 换了会话：落到「最新一根 + 右侧留白」，保证一打开就能看见最新 K 线。
+     *
+     * 旧实现只让“选中的窗口”贴边时追最新、其它窗口用时间范围往回钉，
+     * 结果一个窗口跟着跑、另一个窗口被越钉越靠后；现在统一成“谁都不动”。
      */
-    const keep = followRef.current ? null : readRange(chart.timeScale())
-    const followEdge = keep != null && activeRef.current && atLiveEdge()
+    const ts = chart.timeScale()
+    const prev = ts.getVisibleLogicalRange()
+    const datasetChanged =
+      prevRawBarsRef.current !== null && prevRawBarsRef.current !== rawBars
+    prevRawBarsRef.current = rawBars
     firstTimeRef.current = head
     lenRef.current = bars.length
     probePriceRef.current = tail.close
+
+    // 灌数据本身也会触发一次 range 回调，先静音，别把它当成用户操作推给主图
+    muteRef.current.self = performance.now() + SYNC_MUTE_MS
     series.setData(bars.map((b) => toCandle(b)))
-    if (followEdge) {
-      // 位置 0 = 最右端；不带动画，免得每来一根都滑一下
-      const followEdgeNow = (): void => {
-        if (followRef.current || !activeRef.current) return
-        chart.timeScale().scrollToPosition(0, false)
-      }
-      followEdgeNow()
-      requestAnimationFrame(followEdgeNow)
-    } else if (keep && keep.from <= tail.time && keep.to >= head) {
-      pinRange(keep)
-      requestAnimationFrame(() => pinRange(keep))
-    } else if (followRef.current) {
-      requestAnimationFrame(alignToMain)
+
+    if (!prev || freshChart || datasetChanged) {
+      // 新数据：落回最新一根，保留用户原来的根数（第一次就给默认根数）
+      const span = prev ? prev.to - prev.from : DEFAULT_VISIBLE_BARS
+      const next = latestLogicalRange(bars.length - 1, span, latestRightPad(timeframe))
+      pinLogicalRange(next)
+      requestAnimationFrame(() => pinLogicalRange(next))
+      // 跟随模式在换数据时对齐一次主图；播放推进时不会再对齐
+      if (followRef.current) requestAnimationFrame(alignToMain)
+      return
     }
-  }, [alignToMain, atLiveEdge, bars, pinRange])
+
+    // 同一次回放：视野一根都不许动
+    const keep = { from: prev.from, to: prev.to }
+    pinLogicalRange(keep)
+    requestAnimationFrame(() => pinLogicalRange(keep))
+  }, [alignToMain, bars, pinLogicalRange, rawBars, timeframe])
 
   // ---------- 同步：只订阅「主图 ↔ 自己」这一条边 ----------
   /**
