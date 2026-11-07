@@ -93,6 +93,39 @@ const SESSION_WINDOW_PRESETS: ReadonlyArray<{ labelKey: MessageKey; from: string
 ]
 /** 工具栏周期最多可勾选数量 */
 const MAX_TOOLBAR_TFS = 10
+/** 会话列表默认宽度 / 拖动上下限 */
+const DEFAULT_SESSION_W = 252
+const MIN_SESSION_W = 190
+const MAX_SESSION_W = 460
+/** 未分组是一个真实分组（不可删除），新会话自动进这里 */
+const UNGROUPED_GROUP_ID = '__ungrouped__'
+
+interface SessionGroup {
+  id: string
+  name: string
+  collapsed: boolean
+  sessionIds: string[]
+}
+
+function loadSessionGroups(): SessionGroup[] {
+  try {
+    const raw = localStorage.getItem('tr:sessionGroups')
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((g: any) => g && typeof g.id === 'string' && typeof g.name === 'string')
+      .map((g: any) => ({
+        id: g.id,
+        name: g.name,
+        collapsed: !!g.collapsed,
+        sessionIds: Array.isArray(g.sessionIds) ? g.sessionIds.filter((x: any) => typeof x === 'string') : []
+      }))
+  } catch {
+    return []
+  }
+}
+
 /** 平仓记录面板默认高度 */
 const DEFAULT_TRADE_PANEL_H = 172
 /** 拖动时的高度上下限 */
@@ -597,6 +630,143 @@ export function TrainingPane(): React.JSX.Element {
   const [sessionSidebarOpen, setSessionSidebarOpen] = useState<boolean>(
     () => localStorage.getItem('tr:sessionSidebar') !== '0'
   )
+  /** 会话列表宽度：可拖动，记在本地 */
+  const [sessionW, setSessionW] = useState<number>(() => {
+    const n = Number(localStorage.getItem('tr:sessionW'))
+    return Number.isFinite(n) && n > 0
+      ? Math.max(MIN_SESSION_W, Math.min(MAX_SESSION_W, n))
+      : DEFAULT_SESSION_W
+  })
+  const sessionResizeRef = useRef<{ startX: number; startW: number } | null>(null)
+  useEffect(() => {
+    localStorage.setItem('tr:sessionW', String(sessionW))
+  }, [sessionW])
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const r = sessionResizeRef.current
+      if (!r) return
+      setSessionW(Math.max(MIN_SESSION_W, Math.min(MAX_SESSION_W, r.startW + e.clientX - r.startX)))
+    }
+    const onUp = () => {
+      if (!sessionResizeRef.current) return
+      sessionResizeRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
+
+  /** 会话分组：默认有一组「未分组」，新会话自动进这里 */
+  const [sessionGroups, setSessionGroups] = useState<SessionGroup[]>(loadSessionGroups)
+  const [newGroupOpen, setNewGroupOpen] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null)
+  const [editingGroupName, setEditingGroupName] = useState('')
+  const [draggingSessionId, setDraggingSessionId] = useState<string | null>(null)
+  const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null)
+
+  useEffect(() => {
+    localStorage.setItem('tr:sessionGroups', JSON.stringify(sessionGroups))
+  }, [sessionGroups])
+
+  // 会话增删后把分组里的 id 对齐：新会话进「未分组」，已删除的 id 清掉
+  useEffect(() => {
+    if (sessions.length === 0) return
+    setSessionGroups((prev) => {
+      const ids = new Set(sessions.map((s) => String(s.id)))
+      const seen = new Set<string>()
+      let changed = false
+      let next = prev.map((g) => {
+        const kept = g.sessionIds.filter((id) => {
+          if (!ids.has(id) || seen.has(id)) {
+            changed = true
+            return false
+          }
+          seen.add(id)
+          return true
+        })
+        if (kept.length === g.sessionIds.length) return g
+        changed = true
+        return { ...g, sessionIds: kept }
+      })
+      if (!next.some((g) => g.id === UNGROUPED_GROUP_ID)) {
+        next = [
+          { id: UNGROUPED_GROUP_ID, name: t('training.ungrouped'), collapsed: false, sessionIds: [] },
+          ...next
+        ]
+        changed = true
+      }
+      const missing = sessions
+        .map((s) => String(s.id))
+        .filter((id) => !seen.has(id))
+      if (missing.length > 0) {
+        next = next.map((g) =>
+          g.id === UNGROUPED_GROUP_ID ? { ...g, sessionIds: [...g.sessionIds, ...missing] } : g
+        )
+        changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [sessions, t])
+
+  const moveSessionToGroup = useCallback((sessionId: string, groupId: string, beforeId?: string) => {
+    setSessionGroups((prev) => {
+      let moved = false
+      let next = prev.map((g) => {
+        if (!g.sessionIds.includes(sessionId)) return g
+        moved = true
+        return { ...g, sessionIds: g.sessionIds.filter((id) => id !== sessionId) }
+      })
+      if (!moved) return prev
+      next = next.map((g) => {
+        if (g.id !== groupId) return g
+        const ids = [...g.sessionIds]
+        const at = beforeId ? ids.indexOf(beforeId) : -1
+        if (at >= 0) ids.splice(at, 0, sessionId)
+        else ids.push(sessionId)
+        return { ...g, sessionIds: ids }
+      })
+      return next
+    })
+  }, [])
+
+  const createSessionGroup = useCallback(() => {
+    const name = newGroupName.trim()
+    if (!name) return
+    setSessionGroups((prev) => [
+      ...prev,
+      { id: `g_${Date.now().toString(36)}`, name, collapsed: false, sessionIds: [] }
+    ])
+    setNewGroupName('')
+    setNewGroupOpen(false)
+  }, [newGroupName])
+
+  const deleteSessionGroup = useCallback((groupId: string) => {
+    if (groupId === UNGROUPED_GROUP_ID) return
+    setSessionGroups((prev) => {
+      const removed = prev.find((g) => g.id === groupId)
+      if (!removed) return prev
+      return prev
+        .filter((g) => g.id !== groupId)
+        .map((g) =>
+          g.id === UNGROUPED_GROUP_ID
+            ? { ...g, sessionIds: [...g.sessionIds, ...removed.sessionIds] }
+            : g
+        )
+    })
+  }, [])
+
+  const renameSessionGroup = useCallback((groupId: string, name: string) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    setSessionGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, name: trimmed } : g)))
+    setEditingGroupId(null)
+  }, [])
 
   /**
    * 右侧主列的实时宽度（px）。
@@ -1584,12 +1754,22 @@ export function TrainingPane(): React.JSX.Element {
   return (
     <div className="h-full flex">
       {sessionSidebarOpen ? (
-      <aside className="w-[252px] shrink-0 border-r border-[var(--border-subtle)] bg-[var(--surface-1)] flex flex-col min-h-0">
+      <aside
+        className="relative shrink-0 border-r border-[var(--border-subtle)] bg-[var(--surface-1)] flex flex-col min-h-0"
+        style={{ width: sessionW }}
+      >
         <div className="border-b border-[var(--border-subtle)] px-3 py-2.5">
           <div className="mb-2 flex items-center gap-1.5">
             <span className="text-[12.5px] font-semibold text-[var(--text-primary)]">
               {t('training.sessionsTitle')}
             </span>
+            <button
+              onClick={() => setNewGroupOpen((v) => !v)}
+              className="text-[var(--text-faint)] hover:text-[var(--text-secondary)]"
+              title={t('training.newGroup')}
+            >
+              <Plus size={13} />
+            </button>
             <button
               onClick={() => {
                 void loadDatasets()
@@ -1608,6 +1788,42 @@ export function TrainingPane(): React.JSX.Element {
               <ChevronsLeft size={13} />
             </button>
           </div>
+          {newGroupOpen && (
+            <div className="mb-2 flex items-center gap-1">
+              <input
+                autoFocus
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') createSessionGroup()
+                  if (e.key === 'Escape') {
+                    setNewGroupOpen(false)
+                    setNewGroupName('')
+                  }
+                }}
+                placeholder={t('training.groupNamePlaceholder')}
+                className="min-w-0 flex-1 rounded border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2 py-1 text-[12px] text-[var(--text-primary)] outline-none focus:border-[var(--c-accent)]"
+              />
+              <button
+                onClick={createSessionGroup}
+                disabled={!newGroupName.trim()}
+                title={t('training.createGroup')}
+                className="rounded p-1 text-[var(--c-accent)] hover:bg-[var(--surface-3)] disabled:opacity-30"
+              >
+                <Plus size={13} />
+              </button>
+              <button
+                onClick={() => {
+                  setNewGroupOpen(false)
+                  setNewGroupName('')
+                }}
+                title={t('training.cancel')}
+                className="rounded p-1 text-[var(--text-faint)] hover:bg-[var(--surface-3)]"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
           <button
             onClick={() => setDialogOpen(true)}
             disabled={datasets.length === 0}
@@ -1629,83 +1845,221 @@ export function TrainingPane(): React.JSX.Element {
               {t('training.noSessions')}
             </div>
           )}
-          {sessions.map((s) => {
-            const isActive = activeSession?.id === s.id
-            /**
-             * 正在打的这一集用内存里的实时游标，别用数据库快照。
-             *
-             * 列表数据是打开页面时查出来的一份拷贝，回放每前进一根只会节流落库，
-             * 从来不会回写这份拷贝 —— 直接拿它渲染，进度条就会一直停在打开那一刻
-             * （比如停在 71%，实际已经跑过好几千根）。
-             */
-            // 正在打的这一集用「精确到分钟」的游标时间，切大周期也不会往后退一整格
-            // 余额同理：列表那份是快照，不跟着实时值走的话这一行会一直显示开仓前的钱
-            const row = isActive && currentBar
-              ? { ...s, current_bar_time: currentTime, balance }
-              : s
-            const done = isActive ? completedAt != null : s.completed_at != null
-            const pct = done ? 100 : sessionProgress(row)
+          {sessionGroups.map((group) => {
+            const groupSessions = group.sessionIds
+              .map((id) => sessions.find((s) => String(s.id) === id))
+              .filter((s): s is (typeof sessions)[number] => !!s)
             return (
-            <div
-              key={s.id}
-              className={clsx(
-                'group flex items-start gap-1 px-2 py-2 transition-colors',
-                isActive
-                  ? 'bg-[var(--c-accent-tint)]'
-                  : 'hover:bg-[var(--surface-2)]'
-              )}
-            >
-              <button
-                onClick={() => void openSession(s.id)}
-                className="min-w-0 flex-1 text-left"
-              >
-                <div className="truncate text-[13px] font-medium leading-tight text-[var(--text-primary)]">
-                  {s.name}
-                </div>
-                <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--text-faint)]">
-                  <span className="font-mono">{s.dataset_symbol ?? '--'}</span>
-                  <span>·</span>
-                  <span className="font-mono">{s.display_timeframe ?? 'M5'}</span>
-                  <span className="ml-auto font-mono tabular-nums">{money(s.balance)}</span>
-                </div>
-                {/* 回放进度：按会话区间的时间比例展示，下次打开会从这里继续 */}
-                <div
-                  title={t('training.sessionProgressTitle', {
-                    time: row.current_bar_time
-                      ? fmtTime(row.current_bar_time, timezone)
-                      : t('training.startPoint'),
-                    state: done
-                      ? t('journal.done')
-                      : t('training.progressPct', { p: pct })
-                  })}
-                  className="mt-1.5 h-[3px] w-full overflow-hidden rounded-full bg-[var(--surface-3)]"
-                >
-                  <div
-                    className={clsx(
-                      'h-full rounded-full transition-[width] duration-200',
-                      done ? 'bg-[var(--c-pos)]' : 'bg-[var(--c-accent)]'
-                    )}
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-              </button>
-
-              <button
-                onClick={() => setConfirmDeleteId(s.id)}
-                title={t('training.deleteSession')}
+              <div
+                key={group.id}
                 className={clsx(
-                  'mt-0.5 shrink-0 rounded p-1 transition-colors',
-                  confirmDeleteId === s.id
-                    ? 'bg-[var(--c-neg-tint)] text-[var(--c-neg)]'
-                    : 'text-[var(--text-faint)] opacity-0 group-hover:opacity-100 hover:bg-[var(--c-neg-tint)] hover:text-[var(--c-neg)]'
+                  'group mb-1 rounded-md border border-transparent transition-colors',
+                  dragOverGroupId === group.id && 'border-[var(--c-accent)]/50 bg-[var(--c-accent-tint)]/30'
                 )}
+                onDragOver={(e) => {
+                  if (!draggingSessionId) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  setDragOverGroupId(group.id)
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                    setDragOverGroupId((id) => (id === group.id ? null : id))
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  const id = e.dataTransfer.getData('text/plain') || draggingSessionId
+                  if (id) moveSessionToGroup(id, group.id)
+                  setDraggingSessionId(null)
+                  setDragOverGroupId(null)
+                }}
               >
-                <Trash2 size={13} />
-              </button>
-            </div>
+                <div className="flex items-center gap-1 px-2 py-1.5">
+                  <button
+                    onClick={() =>
+                      setSessionGroups((prev) =>
+                        prev.map((g) =>
+                          g.id === group.id ? { ...g, collapsed: !g.collapsed } : g
+                        )
+                      )
+                    }
+                    title={group.collapsed ? t('training.expandGroup') : t('training.collapseGroup')}
+                    className="shrink-0 rounded p-0.5 text-[var(--text-faint)] hover:bg-[var(--surface-3)] hover:text-[var(--text-secondary)]"
+                  >
+                    <ChevronDown
+                      size={12}
+                      className={clsx('transition-transform', group.collapsed && '-rotate-90')}
+                    />
+                  </button>
+                  {editingGroupId === group.id ? (
+                    <input
+                      autoFocus
+                      value={editingGroupName}
+                      onChange={(e) => setEditingGroupName(e.target.value)}
+                      onBlur={() => renameSessionGroup(group.id, editingGroupName)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') renameSessionGroup(group.id, editingGroupName)
+                        if (e.key === 'Escape') setEditingGroupId(null)
+                      }}
+                      className="min-w-0 flex-1 rounded border border-[var(--c-accent)] bg-[var(--surface-2)] px-1.5 py-0.5 text-[12px] text-[var(--text-primary)] outline-none"
+                    />
+                  ) : (
+                    <button
+                      onDoubleClick={() => {
+                        if (group.id === UNGROUPED_GROUP_ID) return
+                        setEditingGroupId(group.id)
+                        setEditingGroupName(group.name)
+                      }}
+                      title={group.id === UNGROUPED_GROUP_ID ? undefined : t('training.renameGroupHint')}
+                      className="min-w-0 flex-1 truncate text-left text-[11.5px] font-semibold uppercase tracking-wide text-[var(--text-faint)] hover:text-[var(--text-secondary)]"
+                    >
+                      {group.name}
+                    </button>
+                  )}
+                  <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-faint)]">
+                    {groupSessions.length}
+                  </span>
+                  {group.id !== UNGROUPED_GROUP_ID && (
+                    <button
+                      onClick={() => deleteSessionGroup(group.id)}
+                      title={t('training.deleteGroup')}
+                      className="shrink-0 rounded p-0.5 text-[var(--text-faint)] opacity-0 transition-opacity hover:bg-[var(--c-neg-tint)] hover:text-[var(--c-neg)] group-hover:opacity-100"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  )}
+                </div>
+
+                {!group.collapsed && (
+                  <div className="pb-0.5">
+                    {groupSessions.length === 0 && (
+                      <div className="px-7 pb-2 pt-1 text-[11px] text-[var(--text-faint)]">
+                        {t('training.groupEmpty')}
+                      </div>
+                    )}
+                    {groupSessions.map((s) => {
+                      const isActive = activeSession?.id === s.id
+                      /**
+                       * 正在打的这一集用内存里的实时游标，别用数据库快照。
+                       *
+                       * 列表数据是打开页面时查出来的一份拷贝，回放每前进一根只会节流落库，
+                       * 从来不会回写这份拷贝 —— 直接拿它渲染，进度条就会一直停在打开那一刻
+                       * （比如停在 71%，实际已经跑过好几千根）。
+                       */
+                      // 正在打的这一集用「精确到分钟」的游标时间，切大周期也不会往后退一整格
+                      // 余额同理：列表那份是快照，不跟着实时值走的话这一行会一直显示开仓前的钱
+                      const row = isActive && currentBar
+                        ? { ...s, current_bar_time: currentTime, balance }
+                        : s
+                      const done = isActive ? completedAt != null : s.completed_at != null
+                      const pct = done ? 100 : sessionProgress(row)
+                      return (
+                        <div
+                          key={s.id}
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.effectAllowed = 'move'
+                            e.dataTransfer.setData('text/plain', String(s.id))
+                            setDraggingSessionId(String(s.id))
+                          }}
+                          onDragEnd={() => {
+                            setDraggingSessionId(null)
+                            setDragOverGroupId(null)
+                          }}
+                          onDragOver={(e) => {
+                            if (!draggingSessionId) return
+                            e.preventDefault()
+                            e.stopPropagation()
+                            e.dataTransfer.dropEffect = 'move'
+                            setDragOverGroupId(group.id)
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            const id = e.dataTransfer.getData('text/plain') || draggingSessionId
+                            if (id) moveSessionToGroup(id, group.id, String(s.id))
+                            setDraggingSessionId(null)
+                            setDragOverGroupId(null)
+                          }}
+                          className={clsx(
+                            'group flex cursor-grab items-start gap-0.5 px-2 py-2 transition-colors active:cursor-grabbing',
+                            isActive ? 'bg-[var(--c-accent-tint)]' : 'hover:bg-[var(--surface-2)]',
+                            draggingSessionId === String(s.id) && 'opacity-40'
+                          )}
+                        >
+                          <GripVertical
+                            size={11}
+                            className="mt-0.5 shrink-0 text-[var(--text-faint)] opacity-0 group-hover:opacity-100"
+                          />
+                          <button
+                            onClick={() => void openSession(s.id)}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <div className="truncate text-[13px] font-medium leading-tight text-[var(--text-primary)]">
+                              {s.name}
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--text-faint)]">
+                              <span className="font-mono">{s.dataset_symbol ?? '--'}</span>
+                              <span>·</span>
+                              <span className="font-mono">{s.display_timeframe ?? 'M5'}</span>
+                              <span className="ml-auto font-mono tabular-nums">{money(s.balance)}</span>
+                            </div>
+                            {/* 回放进度：按会话区间的时间比例展示，下次打开会从这里继续 */}
+                            <div
+                              title={t('training.sessionProgressTitle', {
+                                time: row.current_bar_time
+                                  ? fmtTime(row.current_bar_time, timezone)
+                                  : t('training.startPoint'),
+                                state: done
+                                  ? t('journal.done')
+                                  : t('training.progressPct', { p: pct })
+                              })}
+                              className="mt-1.5 h-[3px] w-full overflow-hidden rounded-full bg-[var(--surface-3)]"
+                            >
+                              <div
+                                className={clsx(
+                                  'h-full rounded-full transition-[width] duration-200',
+                                  done ? 'bg-[var(--c-pos)]' : 'bg-[var(--c-accent)]'
+                                )}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </button>
+
+                          <button
+                            onClick={() => setConfirmDeleteId(s.id)}
+                            title={t('training.deleteSession')}
+                            className={clsx(
+                              'mt-0.5 shrink-0 rounded p-1 transition-colors',
+                              confirmDeleteId === s.id
+                                ? 'bg-[var(--c-neg-tint)] text-[var(--c-neg)]'
+                                : 'text-[var(--text-faint)] opacity-0 group-hover:opacity-100 hover:bg-[var(--c-neg-tint)] hover:text-[var(--c-neg)]'
+                            )}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             )
           })}
         </div>
+
+        {/* 右边缘拖拽：横向加宽 / 收窄会话列表 */}
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault()
+            sessionResizeRef.current = { startX: e.clientX, startW: sessionW }
+            document.body.style.cursor = 'col-resize'
+            document.body.style.userSelect = 'none'
+          }}
+          title={t('training.resizeSessionList')}
+          className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-[var(--c-accent)]/60"
+        />
       </aside>
       ) : (
         <div className="flex w-8 shrink-0 flex-col items-center gap-2 border-r border-[var(--border-subtle)] bg-[var(--surface-1)] py-2">
