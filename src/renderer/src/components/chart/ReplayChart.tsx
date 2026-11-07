@@ -108,6 +108,8 @@ const DRAWING_LABEL_KEYS: Record<DrawingType, MessageKey> = {
 interface ReplayChartProps {
   bars: Bar[]
   cursor: number
+  /** 主图当前是不是「选中窗口」；从副窗切回来时强制整段重画一次，清掉增量 update 留下的空洞 */
+  active?: boolean
   /**
    * 当前这根「只走到一半」的 K 线（截断到已揭示的分钟）；走完了就是 null。
    *
@@ -623,6 +625,7 @@ const FUTURE_AHEAD_MAX = 50000
 export function ReplayChart({
   bars,
   cursor,
+  active = true,
   partialBar,
   positions,
   activePositionId,
@@ -698,6 +701,8 @@ export function ReplayChart({
   const pointerDownRef = useRef(false)
   /** 按下时刻：拖拽事件丢失时（比如松手在窗口外）用超时兜底，别把视野永久冻住 */
   const pointerDownAtRef = useRef(0)
+  /** 上一次主图是不是选中窗口；从副窗切回主图时要做一次全量 setData */
+  const activeRef = useRef(true)
 
   const containerRef = useRef<HTMLDivElement>(null)
   /** 最外层容器：用来量「主图指标图例占了多高」（提示条要排在它下面） */
@@ -1777,7 +1782,11 @@ export function ReplayChart({
     }
 
     const sameDataset = prevBarsRef.current === bars
-    const appendedOne = sameDataset && visibleCount === prevLenRef.current + 1
+    // 从副窗切回主图：增量 update 可能留下一段没重画的空洞，强制做一次全量 setData
+    const becameActive = active && !activeRef.current
+    activeRef.current = active
+    const appendedOne =
+      !becameActive && sameDataset && visibleCount === prevLenRef.current + 1
 
     /**
      * 默认视图右侧留多少根空白。
@@ -1970,7 +1979,7 @@ export function ReplayChart({
     }
 
     redrawRef.current()
-  }, [bars, cursor, partialBar])
+  }, [bars, cursor, partialBar, active])
 
   // ---------- 设置里改了「未来」根数：只重铺占位点，不重建图表 ----------
   const prevFutureBarsRef = useRef(theme.futureBars)

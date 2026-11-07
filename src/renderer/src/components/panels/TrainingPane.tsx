@@ -2687,6 +2687,7 @@ export function TrainingPane(): React.JSX.Element {
                 <ReplayChart
                   bars={bars}
                   cursor={cursor}
+                  active={!activeSub}
                   // 主图实例递出去，副周期窗要靠它同步时间范围
                   onChartReady={onMainChartReady}
                   // 最后一根只画到已揭示的分钟，别把这一格的收盘价提前露出来
