@@ -29,6 +29,9 @@ export const zh = {
   'training.dualPane': '双周期',
   'training.dualPaneOn': '开一个副周期窗口，两个窗口时间范围同步',
   'training.dualPaneOff': '收起副周期窗口',
+  'training.panes': '窗口',
+  'training.panesHint':
+    '当前 {n} 个窗口（点一下切换：单图 → 双图 → 三图 → 单图）。每个副窗抬头上的「跟随 / 独立」决定它跟不跟主图的时间范围',
   'training.repeatable': '可重复添加',
   'training.addOverlay': '添加一个「{name}」',
   'training.subPaneLimit': '副图最多同时显示 {n} 个',
@@ -257,6 +260,9 @@ export const en: Record<keyof typeof zh, string> = {
   'training.dualPaneOn':
     'Open a second chart pane on its own period — both panes stay time-synced',
   'training.dualPaneOff': 'Collapse the sub-period pane',
+  'training.panes': 'Windows',
+  'training.panesHint':
+    'Currently {n} windows (click to cycle: single → dual → triple → single). Each sub-pane has its own Linked / Detached switch for following the main chart’s time range',
   'training.repeatable': 'Repeatable',
   'training.addOverlay': 'Add {name}',
   'training.subPaneLimit': 'Up to {n} sub-panes at once',

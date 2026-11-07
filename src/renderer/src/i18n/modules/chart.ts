@@ -81,11 +81,19 @@ export const zh = {
   /** 止损被拖到成本价的盈利侧时，线标签后面缀的字 */
   'chart.trailingStop': '移动止盈',
 
-  /** 双周期：下方那个独立的小 K 线窗 */
+  /** 多窗口：主图旁边那几个独立的小 K 线窗 */
   'chart.secondaryPane': '副周期',
   'chart.secondaryTfHint': '切换这个窗口显示的周期',
   'chart.secondaryClose': '关闭副周期窗口',
-  'chart.secondaryEmpty': '这一段还没有足够的 K 线可聚合'
+  'chart.secondaryEmpty': '这一段还没有足够的 K 线可聚合',
+  'chart.subPaneLabel': '窗口 {n}',
+  'chart.subColumn': '副窗列：左右拖动改宽度（双击复位）',
+  'chart.subSplit': '两个副窗的分界：上下拖动改高度（双击对半）',
+  'chart.followOn': '跟随',
+  'chart.followOff': '独立',
+  'chart.followOnHint': '这个窗口跟随主窗口的时间范围：拖动/缩放会同步到主图，主图动它也跟着动',
+  'chart.followOffHint': '这个窗口已与主图脱钩：可以自己缩放/平移，主图怎么动都不影响它',
+  'chart.closeSubPane': '关闭这个窗口'
 }
 
 export const en: Record<keyof typeof zh, string> = {
@@ -167,5 +175,15 @@ export const en: Record<keyof typeof zh, string> = {
   'chart.secondaryPane': 'Sub-period',
   'chart.secondaryTfHint': 'Change the period shown in this pane',
   'chart.secondaryClose': 'Close sub-period pane',
-  'chart.secondaryEmpty': 'Not enough bars here to aggregate yet'
+  'chart.secondaryEmpty': 'Not enough bars here to aggregate yet',
+  'chart.subPaneLabel': 'Window {n}',
+  'chart.subColumn': 'Sub-pane column: drag left/right to resize (double-click to reset)',
+  'chart.subSplit': 'Divider between the two sub-panes: drag up/down (double-click for 50/50)',
+  'chart.followOn': 'Linked',
+  'chart.followOff': 'Detached',
+  'chart.followOnHint':
+    'This window follows the main window’s time range — panning or zooming here moves the main chart too',
+  'chart.followOffHint':
+    'Detached from the main chart — zoom and pan freely here; the main chart will not drag it around',
+  'chart.closeSubPane': 'Close this window'
 }

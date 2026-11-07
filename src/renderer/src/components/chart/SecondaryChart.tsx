@@ -1,5 +1,5 @@
 // ============================================================
-// TraderRewind — 副周期 K 线窗（双周期里「另一个周期」那个小窗）
+// TraderRewind — 副周期 K 线窗（多窗口里除主图以外的那几个小窗）
 //
 // 为什么要单独一个图表实例：lightweight-charts 一个图表里所有 pane 共用同一条
 // 时间轴，同一个 x 只能对应一个时刻。想同时看 M5 和 H1，就只能开两个实例，
@@ -8,7 +8,8 @@
 //
 // 两条硬规矩：
 // 1. 只画到当前回放进度（revealTime），绝不把还没走到的 K 线露出来；
-// 2. 同步是双向的，但要用时间戳挡一下自己的程序化改动，否则两边会互相推来推去。
+// 2. 同步是「主图 ↔ 自己」一条边：跟随主图时双向同步，不跟随就完全不管；
+//    程序化推送要用时间戳挡一下回声，否则两边会互相推来推去。
 // ============================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -24,7 +25,7 @@ import {
   type Time,
   type UTCTimestamp
 } from 'lightweight-charts'
-import { ChevronDown, X } from 'lucide-react'
+import { ChevronDown, Link2, Unlink2, X } from 'lucide-react'
 import clsx from 'clsx'
 import type { Bar, ClosedTrade } from '../../stores/training-store'
 import {
@@ -59,9 +60,17 @@ interface Props {
    * 参数就是「按哪个 series 的价格轴来定位」，光有时间轴画不出横线。
    */
   mainSeries: ISeriesApi<'Candlestick'> | null
-  /** 这个窗口是不是「选中的那个」：选中的负责驱动，另一个跟着走 */
+  /** 这个窗口是不是「选中的那个」：只影响描边和快捷键落点，跟时间同步无关 */
   active: boolean
-  /** 已平仓的历史交易：两个窗口都要看得见 */
+  /**
+   * 要不要跟随主窗口的时间范围。
+   * 开：两边双向同步（在哪个窗口拖，另一个都跟着走）。
+   * 关：这个窗口脱钩，主图怎么动都不碰它，它自己也能随便缩放/平移。
+   */
+  follow: boolean
+  /** 抬头上的名字：窗口 2 / 窗口 3 */
+  label: string
+  /** 已平仓的历史交易：所有窗口都要看得见 */
   trades: ClosedTrade[]
   /** 报告/日志里点选的那一笔：两边都高亮，只有选中窗口负责跳过去 */
   focusedTrade: ClosedTrade | null
@@ -70,6 +79,8 @@ interface Props {
   /** 这一笔要不要由本窗去定位（= 本窗是选中的那个） */
   followFocus: boolean
   onTimeframeChange: (tf: string) => void
+  /** 点抬头那个「跟随 / 独立」按钮 */
+  onToggleFollow: () => void
   onClose: () => void
 }
 
@@ -106,11 +117,14 @@ export function SecondaryChart({
   mainChart,
   mainSeries,
   active,
+  follow,
+  label,
   trades,
   focusedTrade,
   focusSeq,
   followFocus,
   onTimeframeChange,
+  onToggleFollow,
   onClose
 }: Props): React.JSX.Element {
   const { t, locale } = useT()
@@ -126,10 +140,10 @@ export function SecondaryChart({
   const lenRef = useRef(0)
   /** 这些数据是灌给哪个 series 的。图表重建过（StrictMode 双挂载）就必须整批重灌 */
   const ownerRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
-  /** 当前是不是在驱动方（进 ref，免得数据 effect 因为选中变化重跑一遍 setData） */
-  const activeRef = useRef(active)
-  activeRef.current = active
-  /** 主图进 ref：alignToDriver 挂在 rAF 里，闭包读不到最新 props */
+  /** 当前是不是在跟随主图（进 ref，免得数据 effect / 订阅回调因为开关变化重跑） */
+  const followRef = useRef(follow)
+  followRef.current = follow
+  /** 主图进 ref：alignToMain 挂在 rAF 里，闭包读不到最新 props */
   const mainChartRef = useRef<IChartApi | null>(mainChart)
   mainChartRef.current = mainChart
 
@@ -555,7 +569,7 @@ export function SecondaryChart({
     if (range) chart.timeScale().setVisibleLogicalRange(range)
   }, [focusedTrade?.id, focusSeq, followFocus])
 
-  // ---------- 双窗时间范围同步 ----------
+  // ---------- 时间范围同步：主图是唯一的基准，跟随它的窗口围着它转 ----------
   /**
    * 程序化推送的「静默窗」：推给哪个窗口，就在接下来这段时间里把它的变化当成自己的回声吞掉。
    *
@@ -585,26 +599,22 @@ export function SecondaryChart({
   }, [])
 
   /**
-   * 把两个窗口拉齐到「选中的那个」的视野。
-   * 建图、换数据、切换选中窗口时各调用一次。
+   * 把本窗拉齐到主图的视野。建图、换数据、打开「跟随」时各调用一次。
+   * 不跟随的时候什么都不做 —— 用户自己摆好的视野不该被主图拽走。
    */
-  const alignToDriver = (): void => {
+  const alignToMain = useCallback((): void => {
     const chart = chartRef.current
     const main = mainChartRef.current
-    if (!chart || !main) return
-    if (activeRef.current) {
-      const r = readRange(chart.timeScale())
-      if (r) pushToMain(r)
-    } else {
-      const r = readRange(main.timeScale())
-      if (r) pushToSelf(r)
-    }
-  }
+    if (!chart || !main || !followRef.current) return
+    const r = readRange(main.timeScale())
+    if (r) pushToSelf(r)
+  }, [pushToSelf])
 
-  // 数据换了一批：先灌数据，再把两个窗口拉齐
+  // 数据换了一批：先灌数据，再把视野摆回去
   useEffect(() => {
     const series = seriesRef.current
-    if (!series) return
+    const chart = chartRef.current
+    if (!series || !chart) return
     if (bars.length === 0) {
       series.setData([])
       firstTimeRef.current = 0
@@ -632,24 +642,34 @@ export function SecondaryChart({
       return
     }
 
+    /**
+     * setData 之后 lightweight-charts 会自己挪一次视野（贴到最新一根）。
+     * 跟随主图：挪回来也没用，等下一帧听主图的；
+     * 不跟随：把自己刚才看的那一段还回去 —— 否则每聚合出一根新 K 线，这个窗口就跳一次。
+     */
+    const keep = followRef.current ? null : readRange(chart.timeScale())
     firstTimeRef.current = head
     lenRef.current = bars.length
     probePriceRef.current = tail.close
     series.setData(bars.map((b) => toCandle(b)))
-    // setData 之后 lightweight-charts 会自己挪一次视野，等它落定再纠正
-    requestAnimationFrame(alignToDriver)
-    // alignToDriver 只读 ref 和 props，不需要进依赖
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bars, mainChart])
+    requestAnimationFrame(() => {
+      if (followRef.current) {
+        alignToMain()
+        return
+      }
+      // 原来那一段跟新数据有交集才还回去，跨品种 / 跨会话换了数据就让它自己重新铺
+      if (keep && keep.from <= tail.time && keep.to >= head) pushToSelf(keep)
+    })
+  }, [alignToMain, bars])
 
-  // ---------- 同步：两边都跟，但按「来源」挡掉自己推过去的回声 ----------
+  // ---------- 同步：只订阅「主图 ↔ 自己」这一条边 ----------
   /**
-   * 为什么不是「只让选中的那个驱动」：
-   * 回放推进时主图会自动往右滚（贴边跟随最新一根），这时候就算选中的是副窗，
-   * 主图也在动 —— 只订阅一方的话两边立刻走散。
-   *
-   * 所以两边都订阅，但谁被我程序化推过，谁在静默窗内报上来的变化一律不相信。
-   * 详见上面 muteRef 的注释：按数值比会被「桶被夹窄」骗过去，按来源比不会。
+   * 三个窗口如果两两同步是 6 条边，静默窗互相打架，很容易抖起来。
+   * 改成星形：主图是唯一的基准，每个副窗只管自己跟不跟随。
+   *   - 跟随：主图变了推给我，我变了也推给主图（所以在任意一个跟随窗里拖，
+   *     其余的跟随窗也会经主图跟过来）；
+   *   - 不跟随：两个方向都直接 return，互不干涉。
+   * 谁被我程序化推过，谁在静默窗内报上来的变化一律不相信（见 muteRef）。
    */
   useEffect(() => {
     const chart = chartRef.current
@@ -659,19 +679,21 @@ export function SecondaryChart({
 
     const onSelf = (): void => {
       if (performance.now() < muteRef.current.self) return
+      if (!followRef.current) return
       const r = readRange(selfTs)
       if (!r) return
       pushToMain(r)
     }
     const onMain = (): void => {
       if (performance.now() < muteRef.current.main) return
+      if (!followRef.current) return
       const r = readRange(mainTs)
       if (!r) return
       pushToSelf(r)
     }
 
-    // 刚建图 / 刚切换选中窗口：先对齐一次，再开始跟
-    const raf = requestAnimationFrame(alignToDriver)
+    // 刚建图 / 主图刚重建：先对齐一次，再开始跟
+    const raf = requestAnimationFrame(alignToMain)
     selfTs.subscribeVisibleTimeRangeChange(onSelf)
     mainTs.subscribeVisibleTimeRangeChange(onMain)
 
@@ -680,9 +702,14 @@ export function SecondaryChart({
       selfTs.unsubscribeVisibleTimeRangeChange(onSelf)
       mainTs.unsubscribeVisibleTimeRangeChange(onMain)
     }
-    // alignToDriver 只读 ref
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mainChart, active, pushToMain, pushToSelf])
+  }, [alignToMain, mainChart, pushToMain, pushToSelf])
+
+  // 打开「跟随」的那一刻立刻对齐；关掉时保持现状，把视野还给用户
+  useEffect(() => {
+    if (!follow) return
+    const raf = requestAnimationFrame(alignToMain)
+    return () => cancelAnimationFrame(raf)
+  }, [alignToMain, follow])
 
   const tfMenu = (
     <div className="absolute left-0 top-full z-40 mt-1 w-[136px] rounded-md border border-[var(--border-strong)] bg-[var(--surface-1)] p-1 shadow-2xl">
@@ -715,10 +742,10 @@ export function SecondaryChart({
       {active && (
         <div className="pointer-events-none absolute inset-0 z-20 border border-[var(--c-accent)]" />
       )}
-      {/* 抬头：这个窗口展示哪个周期，就在这儿换 —— 不用回工具栏找 */}
+      {/* 抬头：这个窗口展示哪个周期、跟不跟主图，都在这儿设 —— 不用回工具栏找 */}
       <div
         className={clsx(
-          'relative flex h-[22px] shrink-0 items-center gap-1.5 border-b px-2',
+          'relative flex h-[22px] shrink-0 items-center gap-1 border-b px-1.5',
           active
             ? 'border-[var(--c-accent)] bg-[var(--c-accent-tint)]'
             : 'border-[var(--border-subtle)] bg-[var(--surface-2)]'
@@ -726,27 +753,42 @@ export function SecondaryChart({
       >
         <span
           className={clsx(
-            'text-[10px] font-medium uppercase tracking-[0.12em]',
+            'shrink-0 text-[10px] font-medium',
             active ? 'text-[var(--c-accent)]' : 'text-[var(--text-faint)]'
           )}
         >
-          {t('chart.secondaryPane')}
+          {label}
         </span>
         <button
           onClick={() => setMenuOpen((v) => !v)}
           title={t('chart.secondaryTfHint')}
-          className="flex items-center gap-0.5 rounded px-1 py-[1px] text-[11px] font-semibold text-[var(--c-accent)] transition-colors hover:bg-[var(--surface-3)]"
+          className="flex shrink-0 items-center gap-0.5 rounded px-1 py-[1px] text-[11px] font-semibold text-[var(--c-accent)] transition-colors hover:bg-[var(--surface-3)]"
         >
           {timeframeCode(timeframe)}
           <ChevronDown size={10} />
         </button>
-        <span className="truncate text-[10.5px] text-[var(--text-muted)]">
+        {/* 品种和周期名只是提示，窄窗口先让它缩到 0，别把右边两个按钮挤出去 */}
+        <span className="min-w-0 flex-1 truncate text-[10px] text-[var(--text-muted)]">
           {symbol} · {translateLabel(locale, timeframeName(timeframe))}
         </span>
+        {/* 跟随主图的时间范围：开着跟主图一起动，关掉就能自己看自己那一段 */}
+        <button
+          onClick={onToggleFollow}
+          title={follow ? t('chart.followOnHint') : t('chart.followOffHint')}
+          className={clsx(
+            'flex shrink-0 items-center gap-0.5 rounded px-1 py-[1px] text-[10px] transition-colors',
+            follow
+              ? 'bg-[var(--c-accent-tint)] text-[var(--c-accent)] hover:brightness-110'
+              : 'text-[var(--text-faint)] hover:bg-[var(--surface-3)] hover:text-[var(--text-secondary)]'
+          )}
+        >
+          {follow ? <Link2 size={10} /> : <Unlink2 size={10} />}
+          <span>{follow ? t('chart.followOn') : t('chart.followOff')}</span>
+        </button>
         <button
           onClick={onClose}
-          title={t('chart.secondaryClose')}
-          className="ml-auto flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--c-neg)]"
+          title={t('chart.closeSubPane')}
+          className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--text-faint)] transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--c-neg)]"
         >
           <X size={11} />
         </button>

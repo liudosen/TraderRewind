@@ -99,6 +99,86 @@ const DEFAULT_SECONDARY_W = 400
 const MIN_SECONDARY_W = 180
 /** 主图至少留这么宽，副窗不能把它挤没（左右分屏裁的是宽度，跟上下分割裁高度不一样） */
 const MIN_MAIN_W = 300
+/** 副周期窗最多开两个 —— 加上主图正好三窗 */
+const MAX_SUB_CHARTS = 2
+/** 两个副窗上下分割的默认位置 / 拖动上下限（百分比） */
+const DEFAULT_SUB_SPLIT = 50
+const MIN_SUB_SPLIT = 18
+const MAX_SUB_SPLIT = 82
+
+/** 一个副周期窗的持久化状态 */
+interface SubChartState {
+  id: string
+  /** 这个窗口显示的周期 */
+  tf: string
+  /** 要不要跟随主图的时间范围 */
+  follow: boolean
+}
+
+/**
+ * 给新开的副窗挑一个周期。
+ *
+ * 从主图往上找一档还没被别的窗口占用的：小周期看细节、大周期看格局，
+ * 三个窗口都停在同一个周期上就失去开多窗的意义了。上面找不着就往下面找。
+ */
+function pickSubTimeframe(mainTf: string, used: ReadonlySet<string>): string {
+  const start = BASE_TIMEFRAMES.findIndex((o) => o.id === mainTf)
+  if (start >= 0) {
+    for (let d = 2; d < BASE_TIMEFRAMES.length * 2; d++) {
+      for (const idx of [start + d, start - d]) {
+        const cand = BASE_TIMEFRAMES[idx]
+        if (cand && !used.has(cand.id)) return cand.id
+      }
+    }
+  }
+  return BASE_TIMEFRAMES[0].id
+}
+
+/**
+ * 读回上次开着的几个副窗。
+ *
+ * 旧版本只存了「双周期开关 + 一个副窗周期」（tr:dualPane / tr:secondaryTf），
+ * 升级后要迁移过来 —— 不能让老用户打开训练页发现副窗凭空消失了。
+ */
+function loadSubCharts(): SubChartState[] {
+  const mainTf = useTrainingStore.getState().timeframe
+  const raw = localStorage.getItem('tr:subCharts')
+  if (raw != null) {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        return parsed.slice(0, MAX_SUB_CHARTS).map((item, i): SubChartState => {
+          const o = (item ?? {}) as { id?: unknown; tf?: unknown; follow?: unknown }
+          const tf =
+            typeof o.tf === 'string' && BASE_TIMEFRAMES.some((x) => x.id === o.tf)
+              ? o.tf
+              : pickSubTimeframe(mainTf, new Set([mainTf]))
+          return {
+            id: typeof o.id === 'string' && o.id ? o.id : `sub-${i + 1}`,
+            tf,
+            follow: o.follow !== false
+          }
+        })
+      }
+    } catch {
+      // 存坏了就当没存过，下面按老版本的键再试一次
+    }
+  }
+  if (localStorage.getItem('tr:dualPane') === '1') {
+    const saved = localStorage.getItem('tr:secondaryTf')
+    return [
+      {
+        id: 'secondary',
+        tf:
+          saved && BASE_TIMEFRAMES.some((o) => o.id === saved)
+            ? saved
+            : pickSubTimeframe(mainTf, new Set([mainTf])),
+        follow: true
+      }
+    ]
+  }
+  return []
+}
 
 /** 周期列表（工具栏周期面板）自定义排序的存储键 */
 const TF_ORDER_KEY = 'tr:toolbarTfOrder'
@@ -649,38 +729,29 @@ export function TrainingPane(): React.JSX.Element {
     }
   }, [])
 
-  // ---------- 双周期（主图 + 副周期窗）----------
+  // ---------- 多窗口（主图 + 最多两个副周期窗）----------
 
-  const [dualPane, setDualPane] = useState<boolean>(
-    () => localStorage.getItem('tr:dualPane') === '1'
-  )
   /**
-   * 当前选中的是哪个窗口。
-   * 选中的那个负责驱动时间范围（另一个跟着走），方向键切周期也只切它 ——
-   * 不这样的话「在哪个窗口操作」就说不清了。
+   * 副周期窗列表。
+   *
+   * 每个窗口自己存两样东西：显示哪个周期、要不要跟随主图的时间范围。
+   * 跟随的窗口围着主图转（在哪个跟随窗里拖，其余跟随窗也会经主图跟过来）；
+   * 不跟随的窗口跟主图脱钩，可以自己缩放/平移，回放往前走也不打扰它。
+   */
+  const [subCharts, setSubCharts] = useState<SubChartState[]>(loadSubCharts)
+  /**
+   * 当前选中的是哪个窗口（'main' 或某个副窗的 id）。
+   * 选中的那个是方向键切周期的落点、也是「从日志点一笔单子跳过去」的目标。
    *
    * 记到本地：从日志跳回训练页会重新挂载，不记的话选中窗口会悄悄退回主图，
    * 而用户刚在副窗上操作过 —— 跳转落点就跟他预期的不一样了。
    */
-  const [activePane, setActivePane] = useState<'main' | 'secondary'>(() =>
-    localStorage.getItem('tr:activePane') === 'secondary' ? 'secondary' : 'main'
-  )
-  useEffect(() => {
-    localStorage.setItem('tr:activePane', activePane)
-  }, [activePane])
-  const [secondaryTf, setSecondaryTf] = useState<string>(() => {
-    const saved = localStorage.getItem('tr:secondaryTf')
-    if (saved && BASE_TIMEFRAMES.some((o) => o.id === saved)) return saved
-    // 没存过：默认给比主图大两档的周期 —— 小周期看细节、大周期看格局，
-    // 两窗一样就失去「双周期」的意义了
-    const i = BASE_TIMEFRAMES.findIndex((o) => o.id === useTrainingStore.getState().timeframe)
-    return BASE_TIMEFRAMES[Math.min(BASE_TIMEFRAMES.length - 1, Math.max(0, i + 2))].id
+  const [activePane, setActivePane] = useState<string>(() => {
+    const saved = localStorage.getItem('tr:activePane')
+    if (!saved || saved === 'main') return 'main'
+    return subCharts.some((s) => s.id === saved) ? saved : 'main'
   })
-  const [secondaryW, setSecondaryW] = useState<number>(() => {
-    const saved = Number(localStorage.getItem('tr:secondaryW'))
-    return Number.isFinite(saved) && saved >= MIN_SECONDARY_W ? saved : DEFAULT_SECONDARY_W
-  })
-  /** 主图实例：副窗要跟它双向同步时间范围，只能靠 ReplayChart 递出来 */
+  /** 主图实例：副窗要跟它同步时间范围，只能靠 ReplayChart 递出来 */
   const [mainChart, setMainChart] = useState<IChartApi | null>(null)
   /**
    * 主图的 K 线 series。
@@ -697,11 +768,16 @@ export function TrainingPane(): React.JSX.Element {
   )
 
   useEffect(() => {
-    localStorage.setItem('tr:dualPane', dualPane ? '1' : '0')
-  }, [dualPane])
+    localStorage.setItem('tr:subCharts', JSON.stringify(subCharts))
+  }, [subCharts])
   useEffect(() => {
-    localStorage.setItem('tr:secondaryTf', secondaryTf)
-  }, [secondaryTf])
+    localStorage.setItem('tr:activePane', activePane)
+  }, [activePane])
+
+  const [secondaryW, setSecondaryW] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('tr:secondaryW'))
+    return Number.isFinite(saved) && saved >= MIN_SECONDARY_W ? saved : DEFAULT_SECONDARY_W
+  })
   useEffect(() => {
     localStorage.setItem('tr:secondaryW', String(secondaryW))
   }, [secondaryW])
@@ -720,26 +796,48 @@ export function TrainingPane(): React.JSX.Element {
     Math.min(secondaryW, (colW || 1200) - MIN_MAIN_W)
   )
 
-  /**
-   * 副窗真的存在、而且它是选中的那个。
-   * 只存了 localStorage 但副窗没开的时候必须算 false —— 否则「定位目标」会落在一个
-   * 根本不存在的窗口上，主图就不动了。
-   */
-  const secondaryActive = dualPane && activePane === 'secondary'
+  /** 两个副窗上下分割的位置（百分比），拖中间那条横线改 */
+  const [subSplit, setSubSplit] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('tr:subSplit'))
+    return Number.isFinite(saved) && saved >= MIN_SUB_SPLIT && saved <= MAX_SUB_SPLIT
+      ? saved
+      : DEFAULT_SUB_SPLIT
+  })
+  useEffect(() => {
+    localStorage.setItem('tr:subSplit', String(subSplit))
+  }, [subSplit])
+  const subColRef = useRef<HTMLDivElement | null>(null)
+  const splitDragRef = useRef<{ startY: number; startPct: number; h: number } | null>(null)
+  const beginSplitDrag = (e: React.MouseEvent): void => {
+    const h = subColRef.current?.getBoundingClientRect().height ?? 0
+    if (h <= 0) return
+    e.preventDefault()
+    splitDragRef.current = { startY: e.clientY, startPct: subSplit, h }
+    document.body.style.cursor = 'row-resize'
+    document.body.style.userSelect = 'none'
+  }
 
   useEffect(() => {
     const onMove = (e: MouseEvent): void => {
       const st = secResizeRef.current
-      if (!st) return
-      // 分隔条往左拖 = 副窗变宽（副窗在右边，拖的是它的左边界）
-      const next = st.startW - (e.clientX - st.startX)
-      setSecondaryW(Math.max(MIN_SECONDARY_W, Math.min((colW || 1200) - MIN_MAIN_W, next)))
+      if (st) {
+        // 分隔条往左拖 = 副窗变宽（副窗在右边，拖的是它的左边界）
+        const next = st.startW - (e.clientX - st.startX)
+        setSecondaryW(Math.max(MIN_SECONDARY_W, Math.min((colW || 1200) - MIN_MAIN_W, next)))
+        return
+      }
+      const sp = splitDragRef.current
+      if (!sp) return
+      const next = sp.startPct + ((e.clientY - sp.startY) / sp.h) * 100
+      setSubSplit(Math.max(MIN_SUB_SPLIT, Math.min(MAX_SUB_SPLIT, next)))
     }
     const onUp = (): void => {
-      if (!secResizeRef.current) return
-      secResizeRef.current = null
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
+      if (secResizeRef.current || splitDragRef.current) {
+        secResizeRef.current = null
+        splitDragRef.current = null
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -748,6 +846,54 @@ export function TrainingPane(): React.JSX.Element {
       window.removeEventListener('mouseup', onUp)
     }
   }, [colW])
+
+  const addSubChart = useCallback((): void => {
+    setSubCharts((prev) => {
+      if (prev.length >= MAX_SUB_CHARTS) return prev
+      const used = new Set<string>([timeframe, ...prev.map((s) => s.tf)])
+      return [
+        ...prev,
+        {
+          id: `sub-${Date.now().toString(36)}-${prev.length}`,
+          tf: pickSubTimeframe(timeframe, used),
+          follow: true
+        }
+      ]
+    })
+  }, [timeframe])
+
+  const removeSubChart = useCallback((id: string): void => {
+    setSubCharts((prev) => prev.filter((s) => s.id !== id))
+    // 收掉之后操作焦点必须回到主图，否则方向键会去改一个不存在的窗口
+    setActivePane((cur) => (cur === id ? 'main' : cur))
+  }, [])
+
+  const setSubTf = useCallback((id: string, tf: string): void => {
+    setSubCharts((prev) => prev.map((s) => (s.id === id ? { ...s, tf } : s)))
+  }, [])
+
+  const toggleSubFollow = useCallback((id: string): void => {
+    setSubCharts((prev) => prev.map((s) => (s.id === id ? { ...s, follow: !s.follow } : s)))
+  }, [])
+
+  /** 工具栏那个按钮：单图 → 双图 → 三图 → 单图 循环 */
+  const cyclePanes = useCallback((): void => {
+    if (subCharts.length >= MAX_SUB_CHARTS) {
+      setSubCharts([])
+      setActivePane('main')
+      return
+    }
+    addSubChart()
+  }, [addSubChart, subCharts.length])
+
+  /** 窗口总数（1 主图 + N 副窗） */
+  const paneCount = 1 + subCharts.length
+  /**
+   * 选中的窗口是不是某个副窗。
+   * 只存了 localStorage 但那个副窗已经被关掉时必须算 false —— 否则「定位目标」会落在
+   * 一个根本不存在的窗口上，主图就不动了。
+   */
+  const activeSub = subCharts.find((s) => s.id === activePane) ?? null
 
   useEffect(() => {
     void loadDatasets()
@@ -1349,12 +1495,13 @@ export function TrainingPane(): React.JSX.Element {
       if (!activeSession) return
       const step = e.key === 'ArrowRight' ? 1 : -1
 
-      // 选中的是副窗：在全部标准周期里循环（它自己的下拉也是这一套）
-      if (dualPane && activePane === 'secondary') {
+      // 选中的是某个副窗：在全部标准周期里循环（它自己的下拉也是这一套）
+      const sub = subCharts.find((s) => s.id === activePane)
+      if (sub) {
         e.preventDefault()
-        const i = BASE_TIMEFRAMES.findIndex((o) => o.id === secondaryTf)
+        const i = BASE_TIMEFRAMES.findIndex((o) => o.id === sub.tf)
         const next = BASE_TIMEFRAMES[(i + step + BASE_TIMEFRAMES.length) % BASE_TIMEFRAMES.length]
-        if (next) setSecondaryTf(next.id)
+        if (next) setSubTf(sub.id, next.id)
         return
       }
 
@@ -1378,9 +1525,9 @@ export function TrainingPane(): React.JSX.Element {
     setTimeframe,
     orderSide,
     orderDraft,
-    dualPane,
+    subCharts,
     activePane,
-    secondaryTf
+    setSubTf
   ])
 
   // 待删除的会话（用于确认浮窗）
@@ -1808,40 +1955,32 @@ export function TrainingPane(): React.JSX.Element {
               )}
             </div>
 
-            {/* 双周期开关：开了一个副窗，两个窗口各显示一档周期、时间范围互相同步 */}
+            {/* 窗口数量：单图 → 双图 → 三图 循环。
+                每个副窗抬头上有自己的「跟随 / 独立」开关，决定它的时间范围跟不跟主图。 */}
             <button
-              onClick={() => {
-                const next = !dualPane
-                setDualPane(next)
-                if (!next) {
-                  // 收掉副窗之后，操作焦点必须回到主图，否则方向键会去改一个不存在的窗口
-                  setActivePane('main')
-                  return
-                }
-                // 两个窗口显示同一档周期没有意义：开的时候顺手往上挑两档
-                if (secondaryTf === timeframe) {
-                  const i = BASE_TIMEFRAMES.findIndex((o) => o.id === timeframe)
-                  const bigger = BASE_TIMEFRAMES[Math.min(BASE_TIMEFRAMES.length - 1, i + 2)]
-                  if (i >= 0 && bigger && bigger.id !== timeframe) setSecondaryTf(bigger.id)
-                }
-              }}
+              onClick={cyclePanes}
               disabled={bars.length === 0}
-              title={dualPane ? t('training.dualPaneOff') : t('training.dualPaneOn')}
+              title={t('training.panesHint', { n: paneCount })}
               className={clsx(
                 'flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-[11.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-40',
-                dualPane
+                paneCount > 1
                   ? 'border-[var(--c-accent)] bg-[var(--c-accent-tint)] text-[var(--c-accent)]'
                   : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
                 barNarrow && 'px-1.5'
               )}
             >
               <PanelRight size={11} />
-              {!barNarrow && t('training.dualPane')}
-              {dualPane && (
-                <span className="rounded bg-[var(--c-accent)] px-1 font-mono text-[9.5px] text-white">
-                  {timeframeCode(secondaryTf)}
-                </span>
-              )}
+              {!barNarrow && t('training.panes')}
+              <span
+                className={clsx(
+                  'rounded px-1 font-mono text-[9.5px]',
+                  paneCount > 1
+                    ? 'bg-[var(--c-accent)] text-white'
+                    : 'bg-[var(--surface-3)] text-[var(--text-muted)]'
+                )}
+              >
+                {paneCount}
+              </span>
             </button>
 
             <div className="h-4 w-px bg-[var(--border-subtle)]" />
@@ -2043,8 +2182,8 @@ export function TrainingPane(): React.JSX.Element {
               「窗口化之后右侧被遮盖」：右侧价格轴整条跑到屏幕外，
               连图表自己的 autoSize 也因为容器宽度没变而不触发。
 
-              开了双周期之后这里是横向 flex：主图 flex-1，副窗固定宽度贴在右边。
-              浮动工具条和提示都是 absolute，不参与 flex 分配，位置不变。
+              多窗口时这里是横向 flex：主图 flex-1，副窗列固定宽度贴在右边，
+              列里再上下叠 1~2 个副窗。浮动工具条和提示都是 absolute，不参与 flex 分配。
             */}
             <div
               ref={drawBar.containerRef}
@@ -2131,7 +2270,7 @@ export function TrainingPane(): React.JSX.Element {
                 onMouseDownCapture={() => setActivePane('main')}
                 onWheelCapture={() => setActivePane('main')}
               >
-                {dualPane && !secondaryActive && (
+                {paneCount > 1 && !activeSub && (
                   <div className="pointer-events-none absolute inset-0 z-20 border border-[var(--c-accent)]" />
                 )}
               {loading ? (
@@ -2176,8 +2315,8 @@ export function TrainingPane(): React.JSX.Element {
                   trades={closedTrades}
                   focusedTrade={focusedTrade}
                   focusSeq={focusSeq}
-                  // 选中副窗时由副窗定位（两边的「150 根」跨度不同，不能同时定位）
-                  focusTarget={!secondaryActive}
+                  // 选中副窗时由副窗定位（各窗的「150 根」跨度不同，不能同时定位）
+                  focusTarget={!activeSub}
                   onClearFocus={() => setFocusedTrade(null)}
                   pendingOrder={pendingView}
                   onPendingSlChange={(price) => setPendingRisk('sl', price)}
@@ -2193,49 +2332,77 @@ export function TrainingPane(): React.JSX.Element {
               </div>
 
               {/*
-                副周期窗：独立的一个 chart 实例。
+                副周期窗（最多两个）：每个都是独立的一个 chart 实例，上下叠在右列里。
                 lightweight-charts 一个图里所有 pane 共用同一条时间轴，同一个 x 只能
                 对应一个时刻 —— 想同时看 M5 和 H1，只能开两个图再互相同步视野。
+                每个窗口的抬头上有自己的「跟随 / 独立」开关。
               */}
-              {dualPane && bars.length > 0 && (
+              {subCharts.length > 0 && bars.length > 0 && (
                 <>
-                  {/* 分隔条：左右拖动改副窗宽度，双击回到默认 */}
+                  {/* 分隔条：左右拖动改整列宽度，双击回到默认 */}
                   <div
                     onMouseDown={beginSecondaryResize}
                     onDoubleClick={() => setSecondaryW(DEFAULT_SECONDARY_W)}
-                    title={t('chart.secondaryPane')}
+                    title={t('chart.subColumn')}
                     className="group relative h-full w-1.5 shrink-0 cursor-col-resize border-x border-[var(--border-subtle)] bg-[var(--surface-1)] transition-colors hover:bg-[var(--c-accent-tint)]"
                   >
                     <div className="pointer-events-none absolute left-1/2 top-1/2 h-8 w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--border-strong)] group-hover:bg-[var(--c-accent)]" />
                   </div>
 
                   <div
+                    ref={subColRef}
                     style={{ width: effectiveSecondaryW }}
-                    className="relative min-h-0 min-w-0 shrink-0"
-                    onMouseDownCapture={() => setActivePane('secondary')}
-                    onWheelCapture={() => setActivePane('secondary')}
+                    className="flex min-h-0 min-w-0 shrink-0 flex-col"
                   >
-                    <SecondaryChart
-                      rawBars={rawBars}
-                      // 只画到当前回放进度，别把以后的 K 线漏出来
-                      revealTime={cursorTime}
-                      timeframe={secondaryTf}
-                      digits={priceDigits}
-                      symbol={activeSession.dataset_symbol ?? ''}
-                      mainChart={mainChart}
-                      mainSeries={mainSeries}
-                      active={secondaryActive}
-                      // 订单历史线两个窗口都画；但只有选中的那个窗口负责「跳过去」
-                      trades={closedTrades}
-                      focusedTrade={focusedTrade}
-                      focusSeq={focusSeq}
-                      followFocus={secondaryActive}
-                      onTimeframeChange={setSecondaryTf}
-                      onClose={() => {
-                        setDualPane(false)
-                        setActivePane('main')
-                      }}
-                    />
+                    {subCharts.map((sub, i) => (
+                      <React.Fragment key={sub.id}>
+                        {/* 两个副窗之间那条横线：上下拖动改高度，双击回到对半开 */}
+                        {i > 0 && (
+                          <div
+                            onMouseDown={beginSplitDrag}
+                            onDoubleClick={() => setSubSplit(DEFAULT_SUB_SPLIT)}
+                            title={t('chart.subSplit')}
+                            className="group relative h-1.5 w-full shrink-0 cursor-row-resize border-y border-[var(--border-subtle)] bg-[var(--surface-1)] transition-colors hover:bg-[var(--c-accent-tint)]"
+                          >
+                            <div className="pointer-events-none absolute left-1/2 top-1/2 h-[2px] w-8 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--border-strong)] group-hover:bg-[var(--c-accent)]" />
+                          </div>
+                        )}
+                        <div
+                          // 两个副窗按 subSplit 分高度；只有一个时铺满整列
+                          style={
+                            subCharts.length > 1 && i === 0
+                              ? { flex: `0 0 ${subSplit}%`, minHeight: 0 }
+                              : { flex: '1 1 0%', minHeight: 0 }
+                          }
+                          className="relative min-w-0"
+                          onMouseDownCapture={() => setActivePane(sub.id)}
+                          onWheelCapture={() => setActivePane(sub.id)}
+                        >
+                          <SecondaryChart
+                            rawBars={rawBars}
+                            // 只画到当前回放进度，别把以后的 K 线漏出来
+                            revealTime={cursorTime}
+                            timeframe={sub.tf}
+                            digits={priceDigits}
+                            symbol={activeSession.dataset_symbol ?? ''}
+                            mainChart={mainChart}
+                            mainSeries={mainSeries}
+                            active={activePane === sub.id}
+                            // 跟随主图时间范围（每个窗口单独设）
+                            follow={sub.follow}
+                            label={t('chart.subPaneLabel', { n: i + 2 })}
+                            // 订单历史线每个窗口都画；但只有选中的那个窗口负责「跳过去」
+                            trades={closedTrades}
+                            focusedTrade={focusedTrade}
+                            focusSeq={focusSeq}
+                            followFocus={activePane === sub.id}
+                            onTimeframeChange={(tf) => setSubTf(sub.id, tf)}
+                            onToggleFollow={() => toggleSubFollow(sub.id)}
+                            onClose={() => removeSubChart(sub.id)}
+                          />
+                        </div>
+                      </React.Fragment>
+                    ))}
                   </div>
                 </>
               )}
