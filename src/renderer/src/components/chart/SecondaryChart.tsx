@@ -204,6 +204,13 @@ export function SecondaryChart({
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 0,
+        /**
+         * 最后一根 K 线可见时，来了新 K 线要不要把视野往右推一格。
+         *
+         * 跟随主图时无所谓（下一秒也会被主图拉齐）；「独立」的窗口正停在哪一段就该待在哪一段，
+         * 默认值 true 会让回放一开始播就把它一格一格推到最新 —— 等于自动锁屏，根本没法回看前面。
+         */
+        shiftVisibleRangeOnNewBar: !followRef.current,
         // 副图小，刻度挤，只显示「日 时:分」
         tickMarkFormatter: (time: Time): string => {
           const p = tzPartsFromSec(Number(time), useTimezoneStore.getState().effective)
@@ -610,6 +617,25 @@ export function SecondaryChart({
     if (r) pushToSelf(r)
   }, [pushToSelf])
 
+  /**
+   * 不跟随的窗口：把用户自己摆好的视野钉住。
+   *
+   * `setData` 不认 `shiftVisibleRangeOnNewBar`，它会直接把视野重置到最新一根；
+   * 所以灌完数据立刻把刚才那一段还回去（先同步补一次，免得中间闪一帧，再等图表落定确认一次）。
+   * 跟随的窗口不做这件事 —— 它本来就该听主图的。
+   */
+  const pinRange = useCallback(
+    (r: Range): void => {
+      const chart = chartRef.current
+      if (!chart || followRef.current) return
+      const cur = readRange(chart.timeScale())
+      // 已经在原来的位置（1 秒以内算同一段）就不用再推，省得和用户正在进行的拖拽打架
+      if (cur && Math.abs(cur.from - r.from) < 1 && Math.abs(cur.to - r.to) < 1) return
+      pushToSelf(r)
+    },
+    [pushToSelf]
+  )
+
   // 数据换了一批：先灌数据，再把视野摆回去
   useEffect(() => {
     const series = seriesRef.current
@@ -642,25 +668,19 @@ export function SecondaryChart({
       return
     }
 
-    /**
-     * setData 之后 lightweight-charts 会自己挪一次视野（贴到最新一根）。
-     * 跟随主图：挪回来也没用，等下一帧听主图的；
-     * 不跟随：把自己刚才看的那一段还回去 —— 否则每聚合出一根新 K 线，这个窗口就跳一次。
-     */
     const keep = followRef.current ? null : readRange(chart.timeScale())
     firstTimeRef.current = head
     lenRef.current = bars.length
     probePriceRef.current = tail.close
     series.setData(bars.map((b) => toCandle(b)))
-    requestAnimationFrame(() => {
-      if (followRef.current) {
-        alignToMain()
-        return
-      }
-      // 原来那一段跟新数据有交集才还回去，跨品种 / 跨会话换了数据就让它自己重新铺
-      if (keep && keep.from <= tail.time && keep.to >= head) pushToSelf(keep)
-    })
-  }, [alignToMain, bars])
+    // 原来那一段跟新数据有交集才还回去，跨品种 / 跨会话换了数据就让它自己重新铺
+    if (keep && keep.from <= tail.time && keep.to >= head) {
+      pinRange(keep)
+      requestAnimationFrame(() => pinRange(keep))
+    } else if (followRef.current) {
+      requestAnimationFrame(alignToMain)
+    }
+  }, [alignToMain, bars, pinRange])
 
   // ---------- 同步：只订阅「主图 ↔ 自己」这一条边 ----------
   /**
@@ -710,6 +730,17 @@ export function SecondaryChart({
     const raf = requestAnimationFrame(alignToMain)
     return () => cancelAnimationFrame(raf)
   }, [alignToMain, follow])
+
+  /**
+   * 「独立 / 跟随」切换之后，新 K 线还推不推视野。
+   * 建图时按当时的开关设过一次，这里是切换开关的补丁 —— 不改的话，用户刚点完「独立」，
+   * 回放一播这个窗口还是会被新 K 线一格一格推到最新。
+   */
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    chart.timeScale().applyOptions({ shiftVisibleRangeOnNewBar: !follow })
+  }, [follow])
 
   const tfMenu = (
     <div className="absolute left-0 top-full z-40 mt-1 w-[136px] rounded-md border border-[var(--border-strong)] bg-[var(--surface-1)] p-1 shadow-2xl">
