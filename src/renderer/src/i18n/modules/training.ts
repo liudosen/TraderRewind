@@ -139,6 +139,10 @@ export const zh = {
   // ── 平仓记录 ───────────────────────────────────────
   'training.resizeHint': '拖动调整高度 · 双击恢复默认',
   'training.closedTradesTitle': '平仓记录',
+  'training.hideClosedTrades': '隐藏平仓记录',
+  'training.expandClosedTrades': '展开平仓记录',
+  'training.collapseClosedTradesHint': '收起历史列表，把高度还给图表',
+  'training.expandClosedTradesHint': '展开平仓历史表格',
   'training.filteredBy': '已按{label}筛选',
   'training.initialCapital': '初始资金 {value}',
   'training.clearFilter': '清除筛选',
@@ -367,6 +371,10 @@ export const en: Record<keyof typeof zh, string> = {
 
   'training.resizeHint': 'Drag to resize · double-click to reset',
   'training.closedTradesTitle': 'Closed trades',
+  'training.hideClosedTrades': 'Hide closed trades',
+  'training.expandClosedTrades': 'Show closed trades',
+  'training.collapseClosedTradesHint': 'Collapse the history list and give the height back to the chart',
+  'training.expandClosedTradesHint': 'Expand the closed-trade history table',
   'training.filteredBy': 'Filtered by {label}',
   'training.initialCapital': 'Starting balance {value}',
   'training.clearFilter': 'Clear filter',

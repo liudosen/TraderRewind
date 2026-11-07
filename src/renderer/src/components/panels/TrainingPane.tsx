@@ -30,7 +30,9 @@ import {
   AlertTriangle,
   ArrowLeft,
   PanelRight,
-  GripVertical
+  GripVertical,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useHotkeys } from 'react-hotkeys-hook'
@@ -95,6 +97,8 @@ const MAX_TOOLBAR_TFS = 10
 const DEFAULT_TRADE_PANEL_H = 172
 /** 拖动时的高度上下限 */
 const MIN_TRADE_PANEL_H = 96
+/** 收起后只留拖动条 + 标题栏 */
+const COLLAPSED_TRADE_PANEL_H = 38
 /** 副周期窗默认宽度 / 拖动下限 —— 再窄连一根 K 线都摆不下 */
 const DEFAULT_SECONDARY_W = 400
 const MIN_SECONDARY_W = 180
@@ -696,9 +700,14 @@ export function TrainingPane(): React.JSX.Element {
   })
   const resizeRef = useRef<{ startY: number; startH: number } | null>(null)
 
+  /** 平仓记录是否收起（只影响列表，不改变用户记住的展开高度） */
+  const [tradePanelCollapsed, setTradePanelCollapsed] = useState<boolean>(
+    () => localStorage.getItem('tr:tradePanelCollapsed') === '1'
+  )
   useEffect(() => {
     localStorage.setItem('tr:tradePanelH', String(tradePanelH))
-  }, [tradePanelH])
+    localStorage.setItem('tr:tradePanelCollapsed', tradePanelCollapsed ? '1' : '0')
+  }, [tradePanelH, tradePanelCollapsed])
 
   const beginResize = (e: React.MouseEvent): void => {
     e.preventDefault()
@@ -3035,14 +3044,24 @@ export function TrainingPane(): React.JSX.Element {
 
           {/* 平仓记录（拖动上边缘可调整高度） */}
           <div
-            className="flex shrink-0 flex-col border-t border-[var(--border-subtle)]"
-            style={{ height: tradePanelH }}
+            className="flex shrink-0 flex-col border-t border-[var(--border-subtle)] transition-[height] duration-150"
+            style={{ height: tradePanelCollapsed ? COLLAPSED_TRADE_PANEL_H : tradePanelH }}
           >
             <div
-              onMouseDown={beginResize}
-              onDoubleClick={() => setTradePanelH(DEFAULT_TRADE_PANEL_H)}
-              title={t('training.resizeHint')}
-              className="group flex h-2 shrink-0 cursor-row-resize items-center justify-center border-b border-[var(--border-subtle)] bg-[var(--surface-1)]"
+              onMouseDown={tradePanelCollapsed ? undefined : beginResize}
+              onDoubleClick={() => {
+                setTradePanelCollapsed(false)
+                setTradePanelH(DEFAULT_TRADE_PANEL_H)
+              }}
+              title={
+                tradePanelCollapsed
+                  ? t('training.expandClosedTradesHint')
+                  : t('training.resizeHint')
+              }
+              className={clsx(
+                'group flex h-2 shrink-0 items-center justify-center border-b border-[var(--border-subtle)] bg-[var(--surface-1)]',
+                tradePanelCollapsed ? 'cursor-pointer' : 'cursor-row-resize'
+              )}
             >
               <span className="h-[3px] w-9 rounded-full bg-[var(--border-strong)] transition-colors group-hover:bg-[var(--c-accent)]" />
             </div>
@@ -3066,8 +3085,28 @@ export function TrainingPane(): React.JSX.Element {
               <span className="ml-auto text-[11px] text-[var(--text-faint)]">
                 {t('training.initialCapital', { value: money(initialBalance) })}
               </span>
+              <button
+                type="button"
+                onClick={() => setTradePanelCollapsed((v) => !v)}
+                aria-expanded={!tradePanelCollapsed}
+                title={
+                  tradePanelCollapsed
+                    ? t('training.expandClosedTradesHint')
+                    : t('training.collapseClosedTradesHint')
+                }
+                className="flex shrink-0 items-center gap-1 rounded border border-[var(--border-subtle)] px-1.5 py-[1px] text-[10px] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+              >
+                {tradePanelCollapsed ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                <span>
+                  {tradePanelCollapsed
+                    ? t('training.expandClosedTrades')
+                    : t('training.hideClosedTrades')}
+                </span>
+              </button>
             </div>
 
+            {!tradePanelCollapsed && (
+              <>
             {/* 定位被拦下来的原因：只在这笔单「还没发生」或「不属于这一集」时出现 */}
             {focusNote && (
               <div className="flex shrink-0 items-start gap-1.5 border-b border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-1 text-[11px] leading-tight text-amber-400">
@@ -3257,6 +3296,8 @@ export function TrainingPane(): React.JSX.Element {
               </table>
             )}
             </div>
+              </>
+            )}
           </div>
         </div>
       ) : (
