@@ -3094,7 +3094,7 @@ export function TrainingPane(): React.JSX.Element {
                     ? t('training.expandClosedTradesHint')
                     : t('training.collapseClosedTradesHint')
                 }
-                className="flex shrink-0 items-center gap-1 rounded border border-[var(--border-subtle)] px-1.5 py-[1px] text-[10px] text-[var(--text-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                className="flex shrink-0 items-center gap-1 rounded border border-[var(--c-neg)] bg-[var(--c-neg-tint)] px-1.5 py-[1px] text-[10px] font-medium text-[var(--c-neg)] transition-colors hover:border-[var(--c-neg)] hover:bg-[var(--c-neg)] hover:text-white"
               >
                 {tradePanelCollapsed ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
                 <span>
