@@ -42,7 +42,8 @@ export const zh = {
   'training.scrollLatest': '归位到最新 K 线（空格）',
   'training.backToLatest': '归位',
   'training.nextBar': '下一根（Shift + →）',
-  'training.speedHint': '回放速度 {speed}x —— 点击切换到下一档（1x / 2x / 5x / 10x）',
+  'training.speedHint':
+    '回放速度 {speed}x —— 每秒走 {speed} 根「选中窗口」的 K 线；点击切换到下一档（1x / 2x / 5x / 10x）',
   'training.completedHint': '该回测集已完成，可在日志页查看报告',
   'training.viewReport': '查看训练报告',
   'training.report': '报告',
@@ -274,7 +275,8 @@ export const en: Record<keyof typeof zh, string> = {
   'training.scrollLatest': 'Back to latest candle (Space)',
   'training.backToLatest': 'Latest',
   'training.nextBar': 'Next candle (Shift + →)',
-  'training.speedHint': 'Replay speed {speed}x — click to step through 1x / 2x / 5x / 10x',
+  'training.speedHint':
+    'Replay speed {speed}x — {speed} candle(s) of the selected window per second; click to cycle 1x / 2x / 5x / 10x',
   'training.completedHint': 'This session is complete — the report is in Journal',
   'training.viewReport': 'View training report',
   'training.report': 'Report',

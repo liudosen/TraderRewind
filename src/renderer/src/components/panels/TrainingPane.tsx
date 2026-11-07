@@ -60,7 +60,8 @@ import {
   BASE_TIMEFRAMES,
   DEFAULT_TOOLBAR_TIMEFRAMES,
   timeframeCode,
-  timeframeName
+  timeframeName,
+  timeframeSeconds
 } from '@shared/utils/timeframe'
 import { OVERLAYS, SUB_PANES, MAX_SUB_PANES } from '@shared/utils/indicators'
 import { DRAWING_TOOLS, type DrawingType } from '@shared/types/drawing'
@@ -895,17 +896,32 @@ export function TrainingPane(): React.JSX.Element {
    */
   const activeSub = subCharts.find((s) => s.id === activePane) ?? null
 
+  /**
+   * 「下一根」一步走多长 —— 跟着**选中的那个窗口**的周期走。
+   *
+   * 主图 M30、副窗 M1 时，选中副窗按一下（或播放一格）就只走 1 分钟，
+   * 副窗才能一根一根看；选中主图则还是原来的「一根 M30」。
+   * 日历周期（W1/MN1/Q1/Y1）没有固定秒数，返回 0，store 会退回「主图一根」的老口径。
+   */
+  const stepTf = activeSub?.tf ?? timeframe
+  const advanceStep = timeframeSeconds(stepTf)
+  /**
+   * 回放的终点：最后一根也走完了（`partialBar` 为 null）。
+   * 只看下标会在大周期最后一根还没走完时就把「下一根」禁掉。
+   */
+  const atReplayEnd = cursor >= bars.length - 1 && !partialBar
+
   useEffect(() => {
     void loadDatasets()
     void loadSessions()
   }, [loadDatasets, loadSessions])
 
-  // 回放定时器
+  // 回放定时器：每一格走「选中窗口」的一根 K 线（advanceStep 为 0 时退回主图周期）
   useEffect(() => {
     if (!playing) return
-    const interval = window.setInterval(() => advance(), 1000 / barsPerSec)
+    const interval = window.setInterval(() => advance(advanceStep), 1000 / barsPerSec)
     return () => window.clearInterval(interval)
-  }, [playing, barsPerSec, advance])
+  }, [playing, barsPerSec, advance, advanceStep])
 
   useEffect(() => {
     return () => {
@@ -1121,7 +1137,7 @@ export function TrainingPane(): React.JSX.Element {
     }
   }, [activeSession?.id])
 
-  // 回放走到最后一根且有交易时，自动弹出一次训练报告。
+  // 回放走到最后一根、而且最后一根也走完了，且有交易时，自动弹出一次训练报告。
   // 但「打开时就停在末尾」的已完成回测集不算——那种情况用户只想看盘，不想被报告糊脸。
   useEffect(() => {
     if (!activeSession) return
@@ -1129,23 +1145,38 @@ export function TrainingPane(): React.JSX.Element {
     if (reportOpen) return
     if (closedTrades.length === 0) return
     if (bars.length === 0 || cursor < bars.length - 1) return
+    // 大周期最后一根可能只揭到一半（步长比主图周期细），这时候还不算走完
+    if (partialBar) return
     if (autoReportRef.current === activeSession.id) return
     autoReportRef.current = activeSession.id
     setReportOpen(true)
-  }, [cursor, bars.length, closedTrades.length, activeSession?.id, openedAtEnd, reportOpen])
+  }, [cursor, bars.length, partialBar, closedTrades.length, activeSession?.id, openedAtEnd, reportOpen])
 
   /**
    * 回放进度（只做展示，不可拖动）。
    *
-   * 分母用「回测区间根数」。`initialCursor` 是当前周期数组里的下标，
-   * 切过周期后由 store 按时间重算；这里再夹一次，防止历史脏数据把它推到数组外，
-   * 一越界分母就会被兜成 1，进度直接显示成满格。
+   * 用**时间**算，不用下标：步长按选中窗口的周期走之后，一步可能只把当前这根
+   * 往前推几分钟（下标不变），按下标算的话进度条会停在那儿不动。
+   * 起点取回测区间第一根，终点取最后一根 1 分钟 K 线 —— 和「已揭示到哪一分钟」同口径。
    */
   const replayStart = Math.min(Math.max(0, initialCursor), Math.max(0, bars.length - 1))
   const replayBars = Math.max(1, bars.length - 1 - replayStart + 1)
-  const progress = bars.length > 1
-    ? Math.min(1, Math.max(0, (cursor - replayStart) / Math.max(1, bars.length - 1 - replayStart)))
-    : 0
+  const replayStartTime = bars[replayStart]?.time ?? 0
+  const replayEndTime =
+    rawBars.length > 0 ? rawBars[rawBars.length - 1].time : (bars[bars.length - 1]?.time ?? 0)
+  const progress =
+    replayEndTime > replayStartTime
+      ? Math.min(
+          1,
+          Math.max(
+            0,
+            ((cursorTime || replayStartTime) - replayStartTime) /
+              (replayEndTime - replayStartTime)
+          )
+        )
+      : bars.length > 1
+        ? Math.min(1, Math.max(0, (cursor - replayStart) / Math.max(1, bars.length - 1 - replayStart)))
+        : 0
   /**
    * 「现在」这根 K 线 = 已经揭示到的位置。
    *
@@ -1411,16 +1442,16 @@ export function TrainingPane(): React.JSX.Element {
     },
     [activeSession, scrollToLatest, orderSide, orderDraft]
   )
-  // 回放控制：Shift+→ 逐根前进、回车 播放/暂停
+  // 回放控制：Shift+→ 逐根前进（步长按选中的窗口）、回车 播放/暂停
   // 回测不允许回退（不提供「上一根」），避免用户反悔已发生的行情
   useHotkeys(
     'shift+arrowright',
     (e) => {
       e.preventDefault()
       if (orderSide || orderDraft) return
-      if (activeSession) advance()
+      if (activeSession) advance(advanceStep)
     },
-    [activeSession, advance, orderSide, orderDraft]
+    [activeSession, advance, advanceStep, orderSide, orderDraft]
   )
   // T = 跳到下一个交易时段。只在「当前不在时段内」时生效；
   // 没设交易时段的会话按了不生效（只弹一句为什么）。
@@ -1994,9 +2025,10 @@ export function TrainingPane(): React.JSX.Element {
                 {playing ? <Pause size={14} /> : <Play size={14} />}
               </button>
               <IconButton
-                title={t('training.nextBar')}
-                onClick={() => advance()}
-                disabled={cursor >= bars.length - 1}
+                // 步长跟着选中的窗口走：在 M1 副窗上就是「下一分钟」，在主图上就是主图周期
+                title={`${t('training.nextBar')} · ${timeframeCode(stepTf)}`}
+                onClick={() => advance(advanceStep)}
+                disabled={atReplayEnd}
               >
                 <SkipForward size={14} />
               </IconButton>

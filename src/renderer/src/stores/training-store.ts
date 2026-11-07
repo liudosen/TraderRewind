@@ -218,6 +218,29 @@ function bucketEndTime(bucket: number, tf: string, raw: Bar[]): number {
 }
 
 /**
+ * `(from, to]` 这段 1 分钟 K 线的最高 / 最低价。
+ *
+ * 回放一步可能只走几分钟、也可能跨好几根，逐笔判止损止盈都靠这个区间：
+ * 区间里没有任何一分钟（数据缺口）时返回 null —— 没有价格波动，就没什么可判的。
+ */
+function rangeBetween(raw: Bar[], from: number, to: number): { high: number; low: number } | null {
+  if (raw.length === 0) return null
+  // indexAtTime 找的是「时间 <= from 的最后一根」，可能就停在 from 那一根上 —— 那一根已经揭示过，跳过
+  let i = indexAtTime(raw, from)
+  if (raw[i] && raw[i].time <= from) i += 1
+  let high = -Infinity
+  let low = Infinity
+  let found = false
+  for (; i < raw.length && raw[i].time <= to; i++) {
+    const b = raw[i]
+    if (b.high > high) high = b.high
+    if (b.low < low) low = b.low
+    found = true
+  }
+  return found ? { high, low } : null
+}
+
+/**
  * 当前这根 K 线在 `cursorTime` 这个时刻是否「只走到一半」。
  *
  * 走到一半 → 返回截断版（只含已揭示的那些分钟），图表/价格/成交价都用它；
@@ -394,7 +417,14 @@ interface TrainingState {
   setPlaying: (playing: boolean) => void
   togglePlay: () => void
   setBarsPerSec: (n: number) => void
-  advance: () => void
+  /**
+   * 推进回放。
+   *
+   * @param stepSeconds 一步走多少秒。不传 = 当前显示周期的一根 K 线（老行为）；
+   *   训练页会按**选中的那个窗口**的周期传进来 —— 主图 M30、副窗 M1 时选中副窗，
+   *   一次就只走 1 分钟，副窗才能一根一根看。
+   */
+  advance: (stepSeconds?: number) => void
   markCompleted: () => void
   /**
    * 跳到下一个交易时段的开门那根 K 线（只在「当前不在时段内」时有效）。
@@ -1132,8 +1162,9 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
         overlays: indicators.overlays,
         subPanes: indicators.subPanes,
         completedAt: session.completed_at ?? null,
-        // 已完成的回测集一打开就停在最后一根，不该再自动弹报告
-        openedAtEnd: cursor >= bars.length - 1,
+        // 已完成的回测集一打开就停在最后一根，不该再自动弹报告（最后一根没走完时不算）
+        openedAtEnd:
+          cursor >= bars.length - 1 && partialAt(rawBars, tf, cursorBar, cursorTime) == null,
         loading: false
       })
     } catch (e: any) {
@@ -1280,8 +1311,9 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   },
 
   setPlaying: (playing) => {
-    const { cursor, bars } = get()
-    if (playing && cursor >= bars.length - 1) return
+    const { cursor, bars, partialBar } = get()
+    // 最后一根也走完了才没得播；只看下标会把「大周期最后一根还没走完」也算成播完
+    if (playing && cursor >= bars.length - 1 && !partialBar) return
     set({ playing })
     // 暂停时立刻把进度落库，避免下次打开倒退
     if (!playing) {
@@ -1301,53 +1333,80 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     get().persistState()
   },
 
-  advance: () => {
-    const { cursor, bars, rawBars, timeframe } = get()
-    if (cursor >= bars.length - 1) {
+  advance: (stepSeconds) => {
+    const { cursor, bars, rawBars, timeframe, cursorTime } = get()
+    if (bars.length === 0) return
+
+    const first = bars[0].time
+    const lastBar = bars[bars.length - 1]
+    const lastEnd = bucketEndTime(lastBar.time, timeframe, rawBars)
+    const from = Math.max(cursorTime || bars[cursor]?.time || first, first)
+
+    /**
+     * 这一步走到哪一分钟。
+     *
+     * 正常按调用方给的秒数走（选中的窗口是 M1 就走 60 秒）；
+     * 没给（或给的是 0）就退回「当前显示周期的一根」，跟以前一模一样。
+     * 日历周期（W1/MN1/Q1/Y1）没有固定秒数，也只能退回老口径：落到下一根的末尾。
+     */
+    const step = stepSeconds && stepSeconds > 0 ? stepSeconds : timeframeSeconds(timeframe)
+    let to: number
+    if (step > 0) {
+      to = Math.min(from + step, lastEnd)
+    } else {
+      const nextBar = bars[Math.min(cursor + 1, bars.length - 1)]
+      to = Math.min(bucketEndTime(nextBar.time, timeframe, rawBars), lastEnd)
+    }
+    if (to <= from) {
       set({ playing: false })
       return
     }
-    const next = cursor + 1
+
+    const next = Math.max(cursor, indexAtTime(bars, to))
     const bar = bars[next]
-    /**
-     * 走完这一根之后，「打到哪一分钟」的答案是这一格的**最后一分钟**（13:59），
-     * 不是桶起点 13:00 —— 一根 H1 走完 = 这一小时全看过了。
-     * 落库/切周期都靠这个时间戳，用桶起点会让进度在大小周期间来回缩水。
-     */
-    const nextTime = bucketEndTime(bar.time, timeframe, rawBars)
     set({
       cursor: next,
-      cursorTime: nextTime,
-      partialBar: partialAt(rawBars, timeframe, bar, nextTime)
+      cursorTime: to,
+      partialBar: partialAt(rawBars, timeframe, bar, to)
     })
     // 走到区间最后一根 = 这个回测集完成
-    if (next >= bars.length - 1) get().markCompleted()
+    if (to >= lastEnd) get().markCompleted()
 
     /**
-     * 逐笔判止损 / 止盈：同一根 K 线里可能有多笔同时被扫掉（对冲时更是常见——
-     * 一根大阳线会让多头止盈、空头止损一起触发），各笔独立结算。
-     * 单根 K 线无法还原盘中路径，采用保守规则：每笔都先判止损。
+     * 区间内逐笔判止损 / 止盈。
      *
-     * 止损落在成本价的盈利侧（多头 SL 已在开仓价上方 / 空头在下方）时，
-     * 这一笔其实是**移动止盈**被触发 —— 止损跟上去把利润锁住了，
-     * 记账按 trail 记，报告里别和「亏着出场」混在一起看。
+     * 用 `(from, to]` 这段 1 分钟原始 K 线的最高 / 最低，而不是只看 `bars[next]` 整根：
+     * 一步跨一根时两者完全等价；一步只走几分钟时，就不会漏掉这几分钟里的插针，
+     * 也不会因为「拿整根去判」而提前把后面的行情算进来。
+     *
+     * 同一段里可能有多笔同时被扫掉（对冲时更是常见 —— 一根大阳线会让多头止盈、
+     * 空头止损一起触发），各笔独立结算。单段行情无法还原盘中路径，采用保守规则：
+     * 每笔都先判止损。止损落在成本价的盈利侧时按「移动止盈」记（trail）。
      */
-    for (const pos of [...get().positions]) {
-      const stopIsProfit =
-        pos.sl != null &&
-        (pos.side === 'buy' ? pos.sl > pos.entryPrice : pos.sl < pos.entryPrice)
-      const slReason: CloseReason = stopIsProfit ? 'trail' : 'sl'
-      if (pos.side === 'buy') {
-        if (pos.sl != null && bar.low <= pos.sl) {
-          get().closePosition(pos.id, slReason, pos.sl, bar.time)
-        } else if (pos.tp != null && bar.high >= pos.tp) {
-          get().closePosition(pos.id, 'tp', pos.tp, bar.time)
-        }
-      } else {
-        if (pos.sl != null && bar.high >= pos.sl) {
-          get().closePosition(pos.id, slReason, pos.sl, bar.time)
-        } else if (pos.tp != null && bar.low <= pos.tp) {
-          get().closePosition(pos.id, 'tp', pos.tp, bar.time)
+    const range = rangeBetween(rawBars, from, to)
+    if (range) {
+      /**
+       * 成交时间：只是一根内部往前推了几分钟，就按这一分钟记；
+       * 一步跨进了新的一根，就按那根的起点记（跟以前逐根推进的口径一致）。
+       */
+      const fillTime = next === cursor ? to : bar.time
+      for (const pos of [...get().positions]) {
+        const stopIsProfit =
+          pos.sl != null &&
+          (pos.side === 'buy' ? pos.sl > pos.entryPrice : pos.sl < pos.entryPrice)
+        const slReason: CloseReason = stopIsProfit ? 'trail' : 'sl'
+        if (pos.side === 'buy') {
+          if (pos.sl != null && range.low <= pos.sl) {
+            get().closePosition(pos.id, slReason, pos.sl, fillTime)
+          } else if (pos.tp != null && range.high >= pos.tp) {
+            get().closePosition(pos.id, 'tp', pos.tp, fillTime)
+          }
+        } else {
+          if (pos.sl != null && range.high >= pos.sl) {
+            get().closePosition(pos.id, slReason, pos.sl, fillTime)
+          } else if (pos.tp != null && range.low <= pos.tp) {
+            get().closePosition(pos.id, 'tp', pos.tp, fillTime)
+          }
         }
       }
     }
