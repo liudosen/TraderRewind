@@ -143,6 +143,12 @@ export function SecondaryChart({
   /** 当前是不是在跟随主图（进 ref，免得数据 effect / 订阅回调因为开关变化重跑） */
   const followRef = useRef(follow)
   followRef.current = follow
+  /**
+   * 这个窗口是不是「正在被播放的那个」（= 用户选中的那个）。
+   * 只有它会跟着新 K 线往前滚；其它窗口各看各的，步进一根就动一下等于互相打架。
+   */
+  const activeRef = useRef(active)
+  activeRef.current = active
   /** 主图进 ref：alignToMain 挂在 rAF 里，闭包读不到最新 props */
   const mainChartRef = useRef<IChartApi | null>(mainChart)
   mainChartRef.current = mainChart
@@ -205,12 +211,13 @@ export function SecondaryChart({
         secondsVisible: false,
         rightOffset: 0,
         /**
-         * 最后一根 K 线可见时，来了新 K 线要不要把视野往右推一格。
+         * 新 K 线来了要不要自己把视野往右推。
          *
-         * 跟随主图时无所谓（下一秒也会被主图拉齐）；「独立」的窗口正停在哪一段就该待在哪一段，
-         * 默认值 true 会让回放一开始播就把它一格一格推到最新 —— 等于自动锁屏，根本没法回看前面。
+         * 交给下面的「数据 effect」按窗口角色决定，图表这边一律不动：
+         * 只有正在被播放（选中）且贴在最右边的窗口跟着走，其它窗口原地不动。
+         * 交给库自己推的话，所有窗口都会跟着动 —— 步进一根，别的窗口的视野就被改了。
          */
-        shiftVisibleRangeOnNewBar: !followRef.current,
+        shiftVisibleRangeOnNewBar: false,
         // 副图小，刻度挤，只显示「日 时:分」
         tickMarkFormatter: (time: Time): string => {
           const p = tzPartsFromSec(Number(time), useTimezoneStore.getState().effective)
@@ -620,9 +627,8 @@ export function SecondaryChart({
   /**
    * 不跟随的窗口：把用户自己摆好的视野钉住。
    *
-   * `setData` 不认 `shiftVisibleRangeOnNewBar`，它会直接把视野重置到最新一根；
-   * 所以灌完数据立刻把刚才那一段还回去（先同步补一次，免得中间闪一帧，再等图表落定确认一次）。
-   * 跟随的窗口不做这件事 —— 它本来就该听主图的。
+   * 只有「正在被播放的那个窗口」贴在最右边时才会跟着新 K 线往前滚（见下面的数据 effect），
+   * 其它窗口一步进就动视野，等于把「独立」做成了「自动对齐最新」。这里负责把它们按回去。
    */
   const pinRange = useCallback(
     (r: Range): void => {
@@ -635,6 +641,19 @@ export function SecondaryChart({
     },
     [pushToSelf]
   )
+
+  /**
+   * 窗口是不是贴着最右边（= 正在看最新那根）。
+   *
+   * `scrollPosition()` 的单位是「根」，贴着最右边是 0；往回翻是**负数**
+   * （前景留白才会是正数），所以这里取绝对值 —— 直接写 `<= 0` 会把「往回翻了十几根」
+   * 当成贴边，一有新 K 线就把它拽回最新。
+   */
+  const atLiveEdge = useCallback((): boolean => {
+    const chart = chartRef.current
+    if (!chart) return false
+    return Math.abs(chart.timeScale().scrollPosition()) <= 0.5
+  }, [])
 
   // 数据换了一批：先灌数据，再把视野摆回去
   useEffect(() => {
@@ -668,19 +687,36 @@ export function SecondaryChart({
       return
     }
 
+    /**
+     * 灌新数据前先记两件事（都是「这一刻」的状态，setData 之后就不作数了）：
+     *  · keep：不跟随的窗口现在看的是哪一段；
+     *  · followEdge：它是不是「正在被播放、而且正贴着最右边」。
+     *
+     * 只有正在被播放的那个窗口贴边时跟着新 K 线往前走（否则新 K 线会从右边溢出去，
+     * 看不到正在播放的那根）；其它窗口一律原地不动 —— 一步进就动别人的视野，
+     * 等于把「独立」变成了「自动对齐最新」。
+     */
     const keep = followRef.current ? null : readRange(chart.timeScale())
+    const followEdge = keep != null && activeRef.current && atLiveEdge()
     firstTimeRef.current = head
     lenRef.current = bars.length
     probePriceRef.current = tail.close
     series.setData(bars.map((b) => toCandle(b)))
-    // 原来那一段跟新数据有交集才还回去，跨品种 / 跨会话换了数据就让它自己重新铺
-    if (keep && keep.from <= tail.time && keep.to >= head) {
+    if (followEdge) {
+      // 位置 0 = 最右端；不带动画，免得每来一根都滑一下
+      const followEdgeNow = (): void => {
+        if (followRef.current || !activeRef.current) return
+        chart.timeScale().scrollToPosition(0, false)
+      }
+      followEdgeNow()
+      requestAnimationFrame(followEdgeNow)
+    } else if (keep && keep.from <= tail.time && keep.to >= head) {
       pinRange(keep)
       requestAnimationFrame(() => pinRange(keep))
     } else if (followRef.current) {
       requestAnimationFrame(alignToMain)
     }
-  }, [alignToMain, bars, pinRange])
+  }, [alignToMain, atLiveEdge, bars, pinRange])
 
   // ---------- 同步：只订阅「主图 ↔ 自己」这一条边 ----------
   /**
@@ -730,17 +766,6 @@ export function SecondaryChart({
     const raf = requestAnimationFrame(alignToMain)
     return () => cancelAnimationFrame(raf)
   }, [alignToMain, follow])
-
-  /**
-   * 「独立 / 跟随」切换之后，新 K 线还推不推视野。
-   * 建图时按当时的开关设过一次，这里是切换开关的补丁 —— 不改的话，用户刚点完「独立」，
-   * 回放一播这个窗口还是会被新 K 线一格一格推到最新。
-   */
-  useEffect(() => {
-    const chart = chartRef.current
-    if (!chart) return
-    chart.timeScale().applyOptions({ shiftVisibleRangeOnNewBar: !follow })
-  }, [follow])
 
   const tfMenu = (
     <div className="absolute left-0 top-full z-40 mt-1 w-[136px] rounded-md border border-[var(--border-strong)] bg-[var(--surface-1)] p-1 shadow-2xl">
