@@ -2432,6 +2432,13 @@ export function TrainingPane(): React.JSX.Element {
                             label={t('chart.subPaneLabel', { n: i + 2 })}
                             // 订单历史线每个窗口都画；但只有选中的那个窗口负责「跳过去」
                             trades={closedTrades}
+                            // 持仓（开仓 / 止损 / 止盈）三个窗口都画，也都能拖
+                            positions={positions}
+                            activePositionId={activePosition?.id ?? null}
+                            onSelectPosition={selectPosition}
+                            onSlChange={setSl}
+                            onTpChange={setTp}
+                            riskPnlLabel={riskPnlLabel}
                             focusedTrade={focusedTrade}
                             focusSeq={focusSeq}
                             followFocus={activePane === sub.id}

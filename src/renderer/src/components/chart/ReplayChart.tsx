@@ -56,6 +56,15 @@ import {
   type DrawingHit
 } from './drawings'
 import { drawTrades, focusLogicalRange } from './trade-lines'
+import {
+  ENTRY_BUY_COLOR,
+  ENTRY_SELL_COLOR,
+  SL_COLOR,
+  TP_COLOR,
+  TRAIL_COLOR,
+  isTrailingStop,
+  riskTitle
+} from './position-lines'
 import { useChartThemeStore } from '../../stores/chart-theme-store'
 import { useTimezoneStore, currentTimezone } from '../../stores/timezone-store'
 import { tzPartsFromSec } from '@shared/types/timezone'
@@ -233,14 +242,6 @@ export interface PendingOrderView {
 /** 待确认单在命中判定里用的伪 id：和真实持仓 id（`pos_…`）不会撞 */
 const PENDING_ID = '__pending_order__'
 
-const ENTRY_COLOR = '#9ca3af'
-/** 多/空开仓线：对冲时两条线并排，用颜色区分方向和持仓卡里的标签对应 */
-const ENTRY_BUY_COLOR = '#f87171'
-const ENTRY_SELL_COLOR = '#4ade80'
-const SL_COLOR = '#ef4444'
-const TP_COLOR = '#22c55e'
-/** 止损被拖到盈利侧（移动止盈）：换琥珀色，和「亏损止损」一眼分辨 */
-const TRAIL_COLOR = '#f59e0b'
 // 细线更好看，但抓取判定要放宽一点，否则很难「抓住」
 const HIT_TOLERANCE = 10
 
@@ -264,38 +265,6 @@ type RiskHint =
   | { kind: 'sl'; lossSide: string }
   | { kind: 'tp'; profitSide: string }
   | { kind: 'adjust' }
-
-/**
- * 止损 / 止盈线轴标签的文案：`SL` / `TP` 前缀 + 金额。
- *
- * 金额一律由上层给（手数、合约量、佣金、报价货币汇率都在那边），
- * 图表这边只负责拼字符串 —— 没设线或算不出来时就退回裸的 SL / TP。
- *
- * 止损被拖到成本价的盈利侧之后，它其实是「移动止盈」：
- * 标签后面缀一句，免得看到一根红线写着正号金额还以为是止损打错了方向。
- */
-function riskTitle(
-  p: Position,
-  kind: 'sl' | 'tp',
-  label?: (position: Position, kind: 'sl' | 'tp') => string,
-  trailingLabel?: string
-): string {
-  const base = kind === 'sl' ? 'SL' : 'TP'
-  const money = label ? label(p, kind) : ''
-  const trailing = kind === 'sl' && isTrailingStop(p)
-  const title = money ? `${base} ${money}` : base
-  return trailing && trailingLabel ? `${title} · ${trailingLabel}` : title
-}
-
-/**
- * 止损是不是已经被拖到了成本价的盈利侧。
- *
- * 到了盈利侧它就不再是「认亏出局」而是「锁住已有的浮盈」，
- * 所以标签要额外说明、线的颜色也要换掉，否则红线上挂着正数金额看着像算错了。
- */
-function isTrailingStop(p: Position): boolean {
-  return p.sl != null && (p.side === 'buy' ? p.sl > p.entryPrice : p.sl < p.entryPrice)
-}
 
 type AnySeries = ISeriesApi<'Line'> | ISeriesApi<'Histogram'>
 
@@ -953,6 +922,9 @@ export function ReplayChart({
   const riskModeRef = useRef<'free' | 'sl' | 'tp' | null>(null)
   /** 正在拖的是哪一笔持仓 */
   const dragPosRef = useRef<string | null>(null)
+  /** 按下价格线时的 y / 是否已经真的拖动过（防止点一下票面就多出一条极窄止盈） */
+  const dragStartYRef = useRef(0)
+  const dragMovedRef = useRef(false)
 
   /**
    * 待确认单的几条价格线 + 最新快照。
@@ -1855,6 +1827,7 @@ export function ReplayChart({
       metricsDirtyRef.current = true
       riskModeRef.current = null
       dragPosRef.current = null
+      dragMovedRef.current = false
       prevLenRef.current = 0
       prevBarsRef.current = null
       // 图重建了，未来占位要从设置值重新铺
@@ -2708,6 +2681,21 @@ export function ReplayChart({
 
     const onMouseDown = (e: MouseEvent) => {
       if (e.button !== 0) return
+      /**
+       * 图表里还叠着一层 HTML（待确认单票面、减仓菜单、按钮……）。
+       * 这些元素的点击不能当成「按在价格线上」：
+       * 待确认单票面正好压在开仓线上，点「确认」时手抖一像素，
+       * 就会被下面的命中测试抓去拖止盈，成交后莫名其妙多出一条极窄的 TP。
+       */
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        target.closest(
+          'button, input, textarea, select, a, [data-pending-ticket], [data-lot-menu], [data-chart-menu]'
+        )
+      ) {
+        return
+      }
       // 点了图表就退出「聚焦某笔交易」状态，否则开/关两条参考线会一直挂着
       onClearFocus?.()
       const { x, y } = localPoint(e)
@@ -2806,6 +2794,8 @@ export function ReplayChart({
       if (hit) {
         dragRef.current = hit.key
         dragPosRef.current = hit.id
+        dragStartYRef.current = y
+        dragMovedRef.current = false
         // 点到哪笔持仓的线，就把它设为操作焦点（持仓卡高亮、价格卡跟着变）。
         // 待确认单不是持仓，不能拿去 selectPosition —— 传进去会找不到这笔而清空焦点。
         if (hit.id !== PENDING_ID) onSelectPosition?.(hit.id)
@@ -2843,6 +2833,15 @@ export function ReplayChart({
     }
 
     const onContextMenu = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        target.closest(
+          'button, input, textarea, select, a, [data-pending-ticket], [data-lot-menu], [data-chart-menu]'
+        )
+      ) {
+        return
+      }
       const { x, y } = localPoint(e)
 
       // 1) 画到一半：折线右键 = 收尾成形；其它工具右键 = 取消这一次
@@ -3108,6 +3107,11 @@ export function ReplayChart({
       }
 
       if (dragRef.current) {
+        // 点一下线（没有真正拖动）不算数：3px 以内只当点击，避免手抖带出极窄的 SL/TP
+        if (!dragMovedRef.current) {
+          if (Math.abs(y - dragStartYRef.current) < 3) return
+          dragMovedRef.current = true
+        }
         const price = map.yToPrice(y)
         if (price == null) return
 
@@ -3192,6 +3196,7 @@ export function ReplayChart({
         dragRef.current = null
         dragPosRef.current = null
         riskModeRef.current = null
+        dragMovedRef.current = false
         el.style.cursor = ''
         chartRef.current?.applyOptions({ handleScroll: true, handleScale: true })
       }

@@ -27,7 +27,7 @@ import {
 } from 'lightweight-charts'
 import { ChevronDown, Link2, Unlink2, X } from 'lucide-react'
 import clsx from 'clsx'
-import type { Bar, ClosedTrade } from '../../stores/training-store'
+import type { Bar, ClosedTrade, Position } from '../../stores/training-store'
 import {
   BASE_TIMEFRAMES,
   aggregateBars,
@@ -43,6 +43,15 @@ import { tzPartsFromSec } from '@shared/types/timezone'
 import { useT, translateLabel } from '../../i18n'
 import type { ChartMapping } from './drawings'
 import { drawTrades, focusLogicalRange } from './trade-lines'
+import {
+  ENTRY_BUY_COLOR,
+  ENTRY_SELL_COLOR,
+  SL_COLOR,
+  TP_COLOR,
+  TRAIL_COLOR,
+  isTrailingStop,
+  riskTitle
+} from './position-lines'
 
 interface Props {
   /** 1 分钟原始 K 线（本会话全量） */
@@ -73,6 +82,15 @@ interface Props {
   label: string
   /** 已平仓的历史交易：所有窗口都要看得见 */
   trades: ClosedTrade[]
+  /** 当前持仓：三个窗口都要画开仓 / 止损 / 止盈线，并且都能拖 */
+  positions: Position[]
+  /** 当前操作焦点那笔持仓：线和标签亮一点 */
+  activePositionId: string | null
+  onSelectPosition: (positionId: string) => void
+  onSlChange: (positionId: string, price: number) => void
+  onTpChange: (positionId: string, price: number) => void
+  /** 止损/止盈轴上金额文案；和主图、持仓卡共用同一套 */
+  riskPnlLabel?: (position: Position, kind: 'sl' | 'tp') => string
   /** 报告/日志里点选的那一笔：两边都高亮，只有选中窗口负责跳过去 */
   focusedTrade: ClosedTrade | null
   /** 定位序号：同一笔被反复点选时用它强制重新定位 */
@@ -113,6 +131,9 @@ const DEFAULT_VISIBLE_BARS = 80
  * 不会让粗周期窗口右边空出一大段。
  */
 const LIVE_MARGIN_SECONDS = 20 * 60
+/** 价格线抓取判定 / 真正开始拖动的像素阈值 */
+const POS_HIT_TOLERANCE = 9
+const POS_DRAG_START_PX = 3
 
 /** 读某个时间轴当前的可视范围；还算不出来时给 null */
 function readRange(ts: TimeScaleLike): Range | null {
@@ -154,6 +175,12 @@ export function SecondaryChart({
   follow,
   label,
   trades,
+  positions,
+  activePositionId,
+  onSelectPosition,
+  onSlChange,
+  onTpChange,
+  riskPnlLabel,
   focusedTrade,
   focusSeq,
   followFocus,
@@ -170,6 +197,20 @@ export function SecondaryChart({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  /** 持仓价格线：每笔一组开仓 / SL / TP，三线都展示在副窗里 */
+  const posLinesRef = useRef<
+    Map<string, { entry?: IPriceLine; sl?: IPriceLine; tp?: IPriceLine; pending?: IPriceLine }>
+  >(new Map())
+  const positionsRef = useRef<Position[]>(positions)
+  positionsRef.current = positions
+  /** 副窗里正在拖的那条持仓线 */
+  const posDragRef = useRef<{
+    id: string
+    key: 'sl' | 'tp' | 'risk'
+    mode: 'free' | 'sl' | 'tp'
+    startY: number
+    moved: boolean
+  } | null>(null)
   /** 上一批数据的第一根时间 / 根数：用来判断「只是最后一根在走」还是「换了一批」 */
   const firstTimeRef = useRef(0)
   const lenRef = useRef(0)
@@ -309,6 +350,8 @@ export function SecondaryChart({
     return () => {
       chartRef.current = null
       seriesRef.current = null
+      // 图没了，缓存的价格线引用也失效；下一张图要靠 positions effect 重新建
+      posLinesRef.current.clear()
       // 调试钩子要一起清掉，否则关掉副窗之后还读得到一个已经 remove 掉的死图表
       if (import.meta.env.DEV) (window as any).__rw_chart2 = null
       chart.remove()
@@ -601,6 +644,252 @@ export function SecondaryChart({
     redraw()
   }, [focusedTrade?.id, redraw, t])
 
+  // ---------- 持仓：开仓 / 止损 / 止盈线（每个副窗都要画，也都能拖） ----------
+  /**
+   * 结构指纹只关心「有几笔、哪一边、开仓价、有没有 SL/TP、手数」。
+   * 拖动时价格每帧都变，不能靠重建线条；价格更新走下面那个 applyOptions。
+   */
+  const posLineSig = positions
+    .map(
+      (p) =>
+        `${p.id}:${p.side}:${p.entryPrice}:${p.sl != null ? 1 : 0}${p.tp != null ? 1 : 0}:${p.lot}`
+    )
+    .join('|')
+
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series) return
+    for (const lines of posLinesRef.current.values()) {
+      for (const line of Object.values(lines)) {
+        try {
+          series.removePriceLine(line)
+        } catch {
+          // 已随图表一起移除
+        }
+      }
+    }
+    posLinesRef.current.clear()
+
+    for (const p of positions) {
+      const lines: { entry?: IPriceLine; sl?: IPriceLine; tp?: IPriceLine; pending?: IPriceLine } = {}
+      const isActive = p.id === activePositionId
+      const tag = t('chart.sideLotTag', {
+        side: p.side === 'buy' ? t('chart.sideBuy') : t('chart.sideSell'),
+        lot: p.lot.toFixed(2)
+      })
+
+      /**
+       * 和主图完全同一套语义：
+       *  - 两线未设全：开仓价上一条「待定性」线，拖上/拖下决定是 TP 还是 SL；
+       *  - 两线设全：开仓线正常显示；SL/TP 各自一条可拖线。
+       */
+      const needRisk = p.sl == null || p.tp == null
+      if (needRisk) {
+        const lossSide = p.side === 'buy' ? t('chart.sideDown') : t('chart.sideUp')
+        const profitSide = p.side === 'buy' ? t('chart.sideUp') : t('chart.sideDown')
+        const only =
+          p.sl == null && p.tp == null
+            ? t('chart.pendingBoth', { profitSide, lossSide })
+            : p.sl == null
+              ? t('chart.pendingSl', { lossSide })
+              : t('chart.pendingTp', { profitSide })
+        lines.pending = series.createPriceLine({
+          price: p.entryPrice,
+          color: isActive ? '#cbd5e1' : '#7b8494',
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: `${tag} · ${only}`
+        })
+      } else {
+        lines.entry = series.createPriceLine({
+          price: p.entryPrice,
+          color: p.side === 'buy' ? ENTRY_BUY_COLOR : ENTRY_SELL_COLOR,
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: tag
+        })
+      }
+
+      if (p.sl != null) {
+        lines.sl = series.createPriceLine({
+          price: p.sl,
+          color: isTrailingStop(p) ? TRAIL_COLOR : SL_COLOR,
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: riskTitle(p, 'sl', riskPnlLabel, t('chart.trailingStop'))
+        })
+      }
+      if (p.tp != null) {
+        lines.tp = series.createPriceLine({
+          price: p.tp,
+          color: TP_COLOR,
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: riskTitle(p, 'tp', riskPnlLabel, t('chart.trailingStop'))
+        })
+      }
+      posLinesRef.current.set(p.id, lines)
+    }
+  }, [activePositionId, posLineSig, t])
+
+  /** 拖动 / 价格推进时只改线的属性和标签，不重建（每帧重建会掉帧） */
+  useEffect(() => {
+    for (const p of positions) {
+      const lines = posLinesRef.current.get(p.id)
+      if (!lines) continue
+      if (lines.sl && p.sl != null) {
+        lines.sl.applyOptions({
+          price: p.sl,
+          color: isTrailingStop(p) ? TRAIL_COLOR : SL_COLOR,
+          title: riskTitle(p, 'sl', riskPnlLabel, t('chart.trailingStop'))
+        })
+      }
+      if (lines.tp && p.tp != null) {
+        lines.tp.applyOptions({
+          price: p.tp,
+          title: riskTitle(p, 'tp', riskPnlLabel, t('chart.trailingStop'))
+        })
+      }
+    }
+  }, [positions, riskPnlLabel, t])
+
+  /** 副窗卸载：把线摘干净，别留在别的会话/别的图里 */
+  useEffect(() => {
+    return () => {
+      const series = seriesRef.current
+      if (series) {
+        for (const lines of posLinesRef.current.values()) {
+          for (const line of Object.values(lines)) {
+            try {
+              series.removePriceLine(line)
+            } catch {
+              // 图表已经一起销毁
+            }
+          }
+        }
+      }
+      posLinesRef.current.clear()
+    }
+  }, [])
+
+  /**
+   * 副窗里拖持仓的 SL/TP 线。
+   *
+   * 命中、夹取规则跟主图完全一致；区别只是坐标从本窗的 series 换算。
+   * 拖动结果直接写回全局 store，所以主图和另一个副窗会立刻跟着更新。
+   */
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+
+    const hitLine = (y: number): { id: string; key: 'sl' | 'tp' | 'risk' } | null => {
+      const series = seriesRef.current
+      if (!series) return null
+      // 用对象包一层：闭包里给裸变量赋值，TS 的控制流收窄会把它当成永远是 null
+      const hit: { best: { id: string; key: 'sl' | 'tp' | 'risk'; dist: number } | null } = {
+        best: null
+      }
+      const consider = (id: string, key: 'sl' | 'tp' | 'risk', price: number | null): void => {
+        if (price == null) return
+        const coord = series.priceToCoordinate(price)
+        if (coord == null) return
+        const dist = Math.abs((coord as number) - y)
+        if (dist <= POS_HIT_TOLERANCE && (!hit.best || dist < hit.best.dist)) {
+          hit.best = { id, key, dist }
+        }
+      }
+      for (const pos of positionsRef.current) {
+        if (pos.sl == null || pos.tp == null) consider(pos.id, 'risk', pos.entryPrice)
+        consider(pos.id, 'sl', pos.sl)
+        consider(pos.id, 'tp', pos.tp)
+      }
+      return hit.best ? { id: hit.best.id, key: hit.best.key } : null
+    }
+
+    const onDown = (e: MouseEvent): void => {
+      if (e.button !== 0) return
+      const target = e.target as HTMLElement | null
+      if (target?.closest('button, input, textarea, select, a, [data-pending-ticket]')) return
+      const chart = chartRef.current
+      const series = seriesRef.current
+      if (!chart || !series) return
+      const rect = host.getBoundingClientRect()
+      const y = e.clientY - rect.top
+      // 时间轴那一条不算价格区，别把轴上的点当成价格线
+      if (y < 0 || y > rect.height - chart.timeScale().height()) return
+
+      const hit = hitLine(y)
+      if (!hit) return
+      const pos = positionsRef.current.find((p) => p.id === hit.id)
+      if (!pos) return
+      const mode: 'free' | 'sl' | 'tp' =
+        pos.sl == null && pos.tp == null ? 'free' : pos.sl == null ? 'sl' : 'tp'
+      posDragRef.current = { id: hit.id, key: hit.key, mode, startY: y, moved: false }
+      onSelectPosition(pos.id)
+      chart.applyOptions({ handleScroll: false, handleScale: false })
+      host.style.cursor = 'ns-resize'
+      e.preventDefault()
+      e.stopPropagation()
+    }
+
+    const onMove = (e: MouseEvent): void => {
+      const drag = posDragRef.current
+      if (!drag) return
+      const chart = chartRef.current
+      const series = seriesRef.current
+      if (!chart || !series) return
+      const rect = host.getBoundingClientRect()
+      const y = e.clientY - rect.top
+      // 点一下不拖：避免点选持仓时手抖带出一条极窄的止损/止盈
+      if (!drag.moved) {
+        if (Math.abs(y - drag.startY) < POS_DRAG_START_PX) return
+        drag.moved = true
+      }
+      const price = series.coordinateToPrice(y)
+      if (price == null) return
+      const pos = positionsRef.current.find((p) => p.id === drag.id)
+      if (!pos) return
+
+      if (drag.key === 'sl') {
+        onSlChange(pos.id, Number(price))
+      } else if (drag.key === 'tp') {
+        onTpChange(pos.id, Number(price))
+      } else {
+        const point = Math.pow(10, -pos.digits)
+        if (Math.abs(Number(price) - pos.entryPrice) < point) return
+        const up = Number(price) > pos.entryPrice
+        const byDir: 'sl' | 'tp' =
+          pos.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
+        const kind = drag.mode === 'sl' ? 'sl' : drag.mode === 'tp' ? 'tp' : byDir
+        if (kind === 'sl') onSlChange(pos.id, Number(price))
+        else onTpChange(pos.id, Number(price))
+      }
+      e.preventDefault()
+    }
+
+    const onUp = (): void => {
+      if (!posDragRef.current) return
+      posDragRef.current = null
+      host.style.cursor = ''
+      chartRef.current?.applyOptions({ handleScroll: true, handleScale: true })
+    }
+
+    host.addEventListener('mousedown', onDown, true)
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      host.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      host.style.cursor = ''
+      posDragRef.current = null
+    }
+  }, [onSelectPosition, onSlChange, onTpChange])
+
   // 定位：只有「被选中的那个窗口」把视野挪到这笔单上，另一个靠时间范围同步跟过来
   useEffect(() => {
     if (!followFocus) return
@@ -670,6 +959,55 @@ export function SecondaryChart({
   }, [])
 
   /**
+   * 跟随主图时，右侧再留一点「未来空间」。
+   *
+   * 主图的可见范围右端常常正好落在最后一根 K 线上（甚至更靠左），
+   * 直接按这个时间范围设给副窗，副窗的最后一根就贴死在右边框上，
+   * 看起来没有行情要走的空间。这里只在副窗本来就处在最新附近时，
+   * 把右端再加宽视窗宽度的约 10%（夹在 2~30 根）：
+   * 不改变左端看的历史位置，只在右边露出一段空白。
+   *
+   * 用户翻到历史区间（右端离最新还差很多）时不做这件事 —— 那是「跟随同一段」，
+   * 硬加未来空白会把主图的历史位置也带偏。
+   */
+  const ensureFollowSpace = useCallback((): void => {
+    const chart = chartRef.current
+    const list = barsRef.current
+    if (!chart || list.length === 0) return
+    const lr = chart.timeScale().getVisibleLogicalRange()
+    if (!lr) return
+    const last = list.length - 1
+    // 只有本来就在看最新附近才补未来空白
+    if (lr.to < last - 1) return
+    const span = lr.to - lr.from
+    if (!Number.isFinite(span) || span <= 0) return
+    const pad = Math.max(
+      2,
+      Math.min(30, Math.round(span * 0.1), Math.max(2, Math.floor(span) - 2))
+    )
+    if (lr.to >= last + pad) return
+    muteRef.current.self = performance.now() + SYNC_MUTE_MS
+    chart.timeScale().setVisibleLogicalRange({
+      from: last + pad - span,
+      to: last + pad
+    })
+  }, [])
+
+  /**
+   * 把主图的视野推给本窗。
+   *
+   * 推完的下一帧再补右侧未来空白：`setVisibleRange` 会被副窗自己的最后
+   * 一根 K 线夹一下，必须等它落定后再按实际逻辑范围补，否则算出来的空白会偏。
+   */
+  const applyMainRange = useCallback(
+    (r: Range): void => {
+      pushToSelf(r)
+      requestAnimationFrame(ensureFollowSpace)
+    },
+    [ensureFollowSpace, pushToSelf]
+  )
+
+  /**
    * 把本窗拉齐到主图的视野。建图、换数据、打开「跟随」时各调用一次。
    * 不跟随的时候什么都不做 —— 用户自己摆好的视野不该被主图拽走。
    */
@@ -678,8 +1016,8 @@ export function SecondaryChart({
     const main = mainChartRef.current
     if (!chart || !main || !followRef.current) return
     const r = readRange(main.timeScale())
-    if (r) pushToSelf(r)
-  }, [pushToSelf])
+    if (r) applyMainRange(r)
+  }, [applyMainRange])
 
   /**
    * 把视野原样钉住。
@@ -795,7 +1133,7 @@ export function SecondaryChart({
       if (!followRef.current) return
       const r = readRange(mainTs)
       if (!r) return
-      pushToSelf(r)
+      applyMainRange(r)
     }
 
     // 刚建图 / 主图刚重建：先对齐一次，再开始跟
@@ -808,7 +1146,7 @@ export function SecondaryChart({
       selfTs.unsubscribeVisibleTimeRangeChange(onSelf)
       mainTs.unsubscribeVisibleTimeRangeChange(onMain)
     }
-  }, [alignToMain, mainChart, pushToMain, pushToSelf])
+  }, [alignToMain, applyMainRange, mainChart, pushToMain])
 
   // 打开「跟随」的那一刻立刻对齐；关掉时保持现状，把视野还给用户
   useEffect(() => {
@@ -881,11 +1219,14 @@ export function SecondaryChart({
         <button
           onClick={onToggleFollow}
           title={follow ? t('chart.followOnHint') : t('chart.followOffHint')}
+          aria-pressed={follow}
           className={clsx(
-            'flex shrink-0 items-center gap-0.5 rounded px-1 py-[1px] text-[10px] transition-colors',
+            // 两种状态都要有边框和底色：以前「独立」只是暗灰文字，
+            // 看起来像状态标签，用户根本不知道它能点。
+            'flex shrink-0 items-center gap-0.5 rounded border px-1.5 py-[2px] text-[10px] font-medium leading-none shadow-[0_1px_2px_rgba(0,0,0,0.35)] transition-colors',
             follow
-              ? 'bg-[var(--c-accent-tint)] text-[var(--c-accent)] hover:brightness-110'
-              : 'text-[var(--text-faint)] hover:bg-[var(--surface-3)] hover:text-[var(--text-secondary)]'
+              ? 'border-[var(--c-accent-border)] bg-[var(--c-accent-tint)] text-[var(--c-accent)] hover:brightness-110'
+              : 'border-[var(--border-strong)] bg-[var(--surface-4)] text-[var(--text-primary)] hover:border-[var(--c-accent)] hover:text-[var(--c-accent)]'
           )}
         >
           {follow ? <Link2 size={10} /> : <Unlink2 size={10} />}
