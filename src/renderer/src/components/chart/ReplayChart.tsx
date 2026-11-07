@@ -696,6 +696,8 @@ export function ReplayChart({
    * 松手后的下一格再按新位置钉住。
    */
   const pointerDownRef = useRef(false)
+  /** 按下时刻：拖拽事件丢失时（比如松手在窗口外）用超时兜底，别把视野永久冻住 */
+  const pointerDownAtRef = useRef(0)
 
   const containerRef = useRef<HTMLDivElement>(null)
   /** 最外层容器：用来量「主图指标图例占了多高」（提示条要排在它下面） */
@@ -1558,6 +1560,7 @@ export function ReplayChart({
     const markDown = () => {
       pointerDown = true
       pointerDownRef.current = true
+      pointerDownAtRef.current = performance.now()
     }
     /**
      * 松手：把拖动期间搁置的续长补上。
@@ -1567,6 +1570,7 @@ export function ReplayChart({
     const markUp = () => {
       pointerDown = false
       pointerDownRef.current = false
+      pointerDownAtRef.current = 0
       if (!growPending) return
       growPending = false
       growAndRestore()
@@ -1574,6 +1578,8 @@ export function ReplayChart({
     window.addEventListener('pointerdown', markDown, true)
     window.addEventListener('pointerup', markUp, true)
     window.addEventListener('pointercancel', markUp, true)
+    // 拖到窗口外/切走时收不到 pointerup，blur 也收一下，避免 pointerDown 永久为真
+    window.addEventListener('blur', markUp)
     const isDragging = () => pointerDown
 
     /**
@@ -1668,6 +1674,7 @@ export function ReplayChart({
       window.removeEventListener('pointerdown', markDown, true)
       window.removeEventListener('pointerup', markUp, true)
       window.removeEventListener('pointercancel', markUp, true)
+      window.removeEventListener('blur', markUp)
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRangeByUser)
       chart.unsubscribeCrosshairMove(onCrosshair)
       chart.remove()
@@ -1922,6 +1929,15 @@ export function ReplayChart({
      * 数据更新（setData / update / 重铺未来占位）都会让图表按新的最后一根
      * 重算右偏移，所以两种分支都要在最后显式设一次。
      */
+    // 拖拽事件丢失的兜底：超过 5 秒还认为按着，就当成松手了，别把主图永久冻在旧位置
+    if (
+      pointerDownRef.current &&
+      performance.now() - pointerDownAtRef.current > 5000
+    ) {
+      pointerDownRef.current = false
+      pointerDownAtRef.current = 0
+    }
+
     if (sameDataset && !tfChanged && prevLogical && !pointerDownRef.current) {
       const delta = Math.max(0, visibleCount - prevLen)
       const shift = wasAtLiveEdge ? delta : 0
