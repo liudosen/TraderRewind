@@ -1834,6 +1834,25 @@ export function ReplayChart({
       prevLogical != null && prevLen > 0 && prevLogical.to >= prevLen - 3
 
     if (appendedOne) {
+      /**
+       * update() 只替换/追加最后一根。
+       *
+       * 上一格画出去的最后一根可能是 partialBar（只聚合到当时那分钟）。
+       * 现在它已经走完了，必须先用完整的 bars[visibleCount-2] 原地替换它，
+       * 否则它会永远停在截断 OHLC：时间戳仍是桶起点、data() 看起来连续，
+       * 但蜡烛的高低价缺一截，视觉上就是跳空/整段残缺。
+       */
+      const prevIdx = visibleCount - 2
+      if (prevIdx >= 0) {
+        const prev = bars[prevIdx]
+        series.update({
+          time: prev.time as UTCTimestamp,
+          open: prev.open,
+          high: prev.high,
+          low: prev.low,
+          close: prev.close
+        })
+      }
       const bar = partialBar ?? bars[cursor]
       series.update({
         time: bar.time as UTCTimestamp,

@@ -259,6 +259,9 @@ export function partialBucketBar(raw: Bar[], id: string, cutTime: number): Bar |
     }
   }
   if (!out) return null
+  // 桶首分钟缺失时 out.time 会是第一根实际 K 线的时间；统一回桶起点，
+  // 否则增量 update 会把同一根写到非 300s 对齐的 slot 上，来回切换产生空洞
+  out.time = bucket
 
   // 桶里还有没揭示的 K 线 → 这根确实没走完，必须用截断版；否则就是完整的，别动它
   const next = raw[i]
