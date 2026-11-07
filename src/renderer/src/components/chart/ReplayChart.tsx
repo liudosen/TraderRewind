@@ -1932,6 +1932,23 @@ export function ReplayChart({
       const delta = Math.max(0, visibleCount - prevLen)
       const shift = wasAtLiveEdge ? delta : 0
       const target = { from: prevLogical.from + shift, to: prevLogical.to + shift }
+      /**
+       * 贴边时至少给最新一根留一段未来空白。
+       *
+       * 以前这里只是原样平移：如果主图之前被副窗的“右端=最后一根”同步过，
+       * 平移后仍然贴着右边框，最新一根没有呼吸空间。这里按视窗宽度补 6%
+       * （夹在 5~30 根），只在贴边时做；用户翻到历史区不会被动。
+       */
+      if (wasAtLiveEdge) {
+        const span = target.to - target.from
+        const minPad = Math.max(5, Math.min(30, Math.round(span * 0.06)))
+        const minTo = visibleCount - 1 + minPad
+        if (target.to < minTo) {
+          const add = minTo - target.to
+          target.from += add
+          target.to += add
+        }
+      }
       autoRangeAtRef.current = performance.now()
       chart.timeScale().setVisibleLogicalRange(target)
       requestAnimationFrame(() => {

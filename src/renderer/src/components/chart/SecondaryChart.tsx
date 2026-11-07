@@ -1107,13 +1107,6 @@ export function SecondaryChart({
     pushRange(chart.timeScale(), r)
   }, [])
 
-  const pushToMain = useCallback((r: Range): void => {
-    const main = mainChartRef.current
-    if (!main) return
-    muteRef.current.main = performance.now() + SYNC_MUTE_MS
-    pushRange(main.timeScale(), r)
-  }, [])
-
   /**
    * 跟随主图时，右侧再留一点「未来空间」。
    *
@@ -1313,30 +1306,19 @@ export function SecondaryChart({
     requestAnimationFrame(() => pinLogicalRange(target))
   }, [alignToMain, bars, mainAtLiveEdge, pinLogicalRange, rawBars, timeframe])
 
-  // ---------- 同步：只订阅「主图 ↔ 自己」这一条边 ----------
+  // ---------- 同步：只让「主图 → 自己」单向流动 ----------
   /**
-   * 三个窗口如果两两同步是 6 条边，静默窗互相打架，很容易抖起来。
-   * 改成星形：主图是唯一的基准，每个副窗只管自己跟不跟随。
-   *   - 跟随：主图变了推给我，我变了也推给主图（所以在任意一个跟随窗里拖，
-   *     其余的跟随窗也会经主图跟过来）；
-   *   - 不跟随：两个方向都直接 return，互不干涉。
-   * 谁被我程序化推过，谁在静默窗内报上来的变化一律不相信（见 muteRef）。
+   * 主图是唯一的基准，副窗跟随它；主图永远不接受副窗的时间范围。
+   *
+   * 以前跟随窗口也会把自己的范围推回主图（双向同步），结果副窗没有未来空白时
+   * 会把主图的留白一起抹掉，主图最后一根贴死在右边框上。现在只保留单向：
+   * 主图怎么变，跟随副窗跟过来；副窗自己拖动/播放，不改主图的视野。
    */
   useEffect(() => {
     const chart = chartRef.current
     if (!mainChart || !chart) return
-    const selfTs = chart.timeScale()
     const mainTs = mainChart.timeScale()
 
-    const onSelf = (): void => {
-      if (performance.now() < muteRef.current.self) return
-      // 副窗自己驱动播放时，主图保持独立，不接受副窗的时间范围
-      if (playingRef.current && activeRef.current) return
-      if (!followRef.current) return
-      const r = readRange(selfTs)
-      if (!r) return
-      pushToMain(r)
-    }
     const onMain = (): void => {
       if (performance.now() < muteRef.current.main) return
       // 副窗在驱动播放时也不让主图把它拉回自己的范围
@@ -1349,15 +1331,13 @@ export function SecondaryChart({
 
     // 刚建图 / 主图刚重建：先对齐一次，再开始跟
     const raf = requestAnimationFrame(alignToMain)
-    selfTs.subscribeVisibleTimeRangeChange(onSelf)
     mainTs.subscribeVisibleTimeRangeChange(onMain)
 
     return () => {
       cancelAnimationFrame(raf)
-      selfTs.unsubscribeVisibleTimeRangeChange(onSelf)
       mainTs.unsubscribeVisibleTimeRangeChange(onMain)
     }
-  }, [alignToMain, applyMainRange, mainChart, pushToMain])
+  }, [alignToMain, applyMainRange, mainChart])
 
   // 打开「跟随」的那一刻立刻对齐；关掉时保持现状，把视野还给用户
   useEffect(() => {
