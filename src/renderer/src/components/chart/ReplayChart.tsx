@@ -179,11 +179,6 @@ interface ReplayChartProps {
    */
   focusTarget?: boolean
   /**
-   * 强制冻结主图视野：副窗自己驱动播放时，主图保持独立，
-   * 即使贴着最新也不跟着数据右移，更不接受副窗的时间范围。
-   */
-  freezeView?: boolean
-  /**
    * 当前允许显示到哪一根 K 线（含）—— 回放没走完时就是游标那一根。
    *
    * 由上层用 `revealIndexOf(bars, cursor, completedAt)` 算好传进来：
@@ -655,7 +650,6 @@ export function ReplayChart({
   focusedTrade,
   focusSeq,
   focusTarget = true,
-  freezeView = false,
   revealIndex,
   onClearFocus,
   pendingOrder,
@@ -1821,7 +1815,7 @@ export function ReplayChart({
      * 两种需求不矛盾：区别只在“推之前右端在不在最新附近”。
      */
     const wasAtLiveEdge =
-      !freezeView && prevLogical != null && prevLen > 0 && prevLogical.to >= prevLen - 3
+      prevLogical != null && prevLen > 0 && prevLogical.to >= prevLen - 3
 
     if (appendedOne) {
       const bar = partialBar ?? bars[cursor]
@@ -1960,7 +1954,7 @@ export function ReplayChart({
     }
 
     redrawRef.current()
-  }, [bars, cursor, partialBar, freezeView])
+  }, [bars, cursor, partialBar])
 
   // ---------- 设置里改了「未来」根数：只重铺占位点，不重建图表 ----------
   const prevFutureBarsRef = useRef(theme.futureBars)

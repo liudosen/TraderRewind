@@ -2365,8 +2365,6 @@ export function TrainingPane(): React.JSX.Element {
                   focusSeq={focusSeq}
                   // 选中副窗时由副窗定位（各窗的「150 根」跨度不同，不能同时定位）
                   focusTarget={!activeSub}
-                  // 副窗正在驱动播放时，主图保持自己的范围，不跟副窗变
-                  freezeView={playing && activeSub != null}
                   onClearFocus={() => setFocusedTrade(null)}
                   // 待确认单只画在“当前选中的窗口”：选中副窗时主图不再显示票面
                   pendingOrder={activeSub ? null : pendingView}
