@@ -52,6 +52,7 @@ import {
   isTrailingStop,
   riskTitle
 } from './position-lines'
+import { PendingTicket, type PendingOrderView } from './pending-ticket'
 
 interface Props {
   /** 1 分钟原始 K 线（本会话全量） */
@@ -91,6 +92,15 @@ interface Props {
   onTpChange: (positionId: string, price: number) => void
   /** 止损/止盈轴上金额文案；和主图、持仓卡共用同一套 */
   riskPnlLabel?: (position: Position, kind: 'sl' | 'tp') => string
+  /**
+   * 待确认下单：只有「当前选中的窗口」会拿到它。
+   * 在哪个窗口按 B/S，票面、开仓线和拖动就落在哪个窗口。
+   */
+  pendingOrder?: PendingOrderView | null
+  onPendingSlChange?: (price: number) => void
+  onPendingTpChange?: (price: number) => void
+  onPendingConfirm?: () => void
+  onPendingCancel?: () => void
   /** 报告/日志里点选的那一笔：两边都高亮，只有选中窗口负责跳过去 */
   focusedTrade: ClosedTrade | null
   /** 定位序号：同一笔被反复点选时用它强制重新定位 */
@@ -134,6 +144,8 @@ const LIVE_MARGIN_SECONDS = 20 * 60
 /** 价格线抓取判定 / 真正开始拖动的像素阈值 */
 const POS_HIT_TOLERANCE = 9
 const POS_DRAG_START_PX = 3
+/** 待确认单在命中判定里的伪 id */
+const PENDING_ID = '__pending_order__'
 
 /** 读某个时间轴当前的可视范围；还算不出来时给 null */
 function readRange(ts: TimeScaleLike): Range | null {
@@ -186,6 +198,11 @@ export function SecondaryChart({
   onSlChange,
   onTpChange,
   riskPnlLabel,
+  pendingOrder,
+  onPendingSlChange,
+  onPendingTpChange,
+  onPendingConfirm,
+  onPendingCancel,
   focusedTrade,
   focusSeq,
   followFocus,
@@ -216,6 +233,22 @@ export function SecondaryChart({
     startY: number
     moved: boolean
   } | null>(null)
+  /** 待确认单快照 + 价格线；只在当前选中的副窗里存在 */
+  const pendingRef = useRef<PendingOrderView | null>(pendingOrder ?? null)
+  pendingRef.current = pendingOrder ?? null
+  const pendingLinesRef = useRef<{ entry?: IPriceLine; sl?: IPriceLine; tp?: IPriceLine }>({})
+  const pendingCbRef = useRef({
+    sl: onPendingSlChange,
+    tp: onPendingTpChange,
+    confirm: onPendingConfirm,
+    cancel: onPendingCancel
+  })
+  pendingCbRef.current = {
+    sl: onPendingSlChange,
+    tp: onPendingTpChange,
+    confirm: onPendingConfirm,
+    cancel: onPendingCancel
+  }
   /** 上一批数据的第一根时间 / 根数：用来判断「只是最后一根在走」还是「换了一批」 */
   const firstTimeRef = useRef(0)
   const lenRef = useRef(0)
@@ -358,8 +391,9 @@ export function SecondaryChart({
     return () => {
       chartRef.current = null
       seriesRef.current = null
-      // 图没了，缓存的价格线引用也失效；下一张图要靠 positions effect 重新建
+      // 图没了，缓存的价格线引用也失效；下一张图要靠 positions / pending effect 重新建
       posLinesRef.current.clear()
+      pendingLinesRef.current = {}
       // 调试钩子要一起清掉，否则关掉副窗之后还读得到一个已经 remove 掉的死图表
       if (import.meta.env.DEV) (window as any).__rw_chart2 = null
       chart.remove()
@@ -453,6 +487,14 @@ export function SecondaryChart({
         return p == null ? null : Number(p)
       }
     }
+  }, [])
+
+  /** 待确认单票面的 y：跟本窗 K 线 series 的价格轴换算 */
+  const pendingPriceToY = useCallback((price: number): number | null => {
+    const series = seriesRef.current
+    if (!series) return null
+    const c = series.priceToCoordinate(price)
+    return c == null ? null : (c as number)
   }, [])
 
   const redraw = useCallback(() => {
@@ -784,6 +826,72 @@ export function SecondaryChart({
     }
   }, [])
 
+  // ---------- 待确认下单：开仓线 / SL / TP（只画在当前选中的副窗） ----------
+  const pendingSig = pendingOrder
+    ? `${pendingOrder.side}|${pendingOrder.entry}|${pendingOrder.sl}|${pendingOrder.tp}|${pendingOrder.slLabel ?? ''}|${pendingOrder.tpLabel ?? ''}`
+    : ''
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series) return
+    for (const line of Object.values(pendingLinesRef.current)) {
+      try {
+        series.removePriceLine(line)
+      } catch {
+        // 已随图表一起移除
+      }
+    }
+    pendingLinesRef.current = {}
+
+    const p = pendingRef.current
+    if (!p) return
+    const sideColor = p.side === 'buy' ? ENTRY_BUY_COLOR : ENTRY_SELL_COLOR
+    pendingLinesRef.current.entry = series.createPriceLine({
+      price: p.entry,
+      color: sideColor,
+      lineWidth: 1,
+      lineStyle: 2,
+      axisLabelVisible: true,
+      title: ''
+    })
+    if (p.sl != null) {
+      pendingLinesRef.current.sl = series.createPriceLine({
+        price: p.sl,
+        color: SL_COLOR,
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: p.slLabel ? `SL ${p.slLabel}` : 'SL'
+      })
+    }
+    if (p.tp != null) {
+      pendingLinesRef.current.tp = series.createPriceLine({
+        price: p.tp,
+        color: TP_COLOR,
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: p.tpLabel ? `TP ${p.tpLabel}` : 'TP'
+      })
+    }
+  }, [pendingSig])
+
+  /** 待确认单卸载 / 切走时把线清干净 */
+  useEffect(() => {
+    return () => {
+      const series = seriesRef.current
+      if (series) {
+        for (const line of Object.values(pendingLinesRef.current)) {
+          try {
+            series.removePriceLine(line)
+          } catch {
+            // 图表已经一起销毁
+          }
+        }
+      }
+      pendingLinesRef.current = {}
+    }
+  }, [])
+
   /**
    * 副窗里拖持仓的 SL/TP 线。
    *
@@ -810,6 +918,13 @@ export function SecondaryChart({
           hit.best = { id, key, dist }
         }
       }
+      // 待确认单盖在持仓线之上：先考虑它，同价位时优先抓住票面这条线
+      const pend = pendingRef.current
+      if (pend) {
+        if (pend.sl == null || pend.tp == null) consider(PENDING_ID, 'risk', pend.entry)
+        consider(PENDING_ID, 'sl', pend.sl)
+        consider(PENDING_ID, 'tp', pend.tp)
+      }
       for (const pos of positionsRef.current) {
         if (pos.sl == null || pos.tp == null) consider(pos.id, 'risk', pos.entryPrice)
         consider(pos.id, 'sl', pos.sl)
@@ -832,12 +947,15 @@ export function SecondaryChart({
 
       const hit = hitLine(y)
       if (!hit) return
-      const pos = positionsRef.current.find((p) => p.id === hit.id)
-      if (!pos) return
+      const pending = hit.id === PENDING_ID
+      const src = pending
+        ? pendingRef.current
+        : positionsRef.current.find((p) => p.id === hit.id) ?? null
+      if (!src) return
       const mode: 'free' | 'sl' | 'tp' =
-        pos.sl == null && pos.tp == null ? 'free' : pos.sl == null ? 'sl' : 'tp'
+        src.sl == null && src.tp == null ? 'free' : src.sl == null ? 'sl' : 'tp'
       posDragRef.current = { id: hit.id, key: hit.key, mode, startY: y, moved: false }
-      onSelectPosition(pos.id)
+      if (!pending) onSelectPosition(hit.id)
       chart.applyOptions({ handleScroll: false, handleScale: false })
       host.style.cursor = 'ns-resize'
       e.preventDefault()
@@ -859,6 +977,28 @@ export function SecondaryChart({
       }
       const price = series.coordinateToPrice(y)
       if (price == null) return
+
+      if (drag.id === PENDING_ID) {
+        const pend = pendingRef.current
+        if (!pend) return
+        if (drag.key === 'sl') {
+          pendingCbRef.current.sl?.(Number(price))
+        } else if (drag.key === 'tp') {
+          pendingCbRef.current.tp?.(Number(price))
+        } else {
+          const point = Math.pow(10, -digits)
+          if (Math.abs(Number(price) - pend.entry) < point) return
+          const up = Number(price) > pend.entry
+          const byDir: 'sl' | 'tp' =
+            pend.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
+          const kind = drag.mode === 'sl' ? 'sl' : drag.mode === 'tp' ? 'tp' : byDir
+          if (kind === 'sl') pendingCbRef.current.sl?.(Number(price))
+          else pendingCbRef.current.tp?.(Number(price))
+        }
+        e.preventDefault()
+        return
+      }
+
       const pos = positionsRef.current.find((p) => p.id === drag.id)
       if (!pos) return
 
@@ -896,7 +1036,7 @@ export function SecondaryChart({
       host.style.cursor = ''
       posDragRef.current = null
     }
-  }, [onSelectPosition, onSlChange, onTpChange])
+  }, [digits, onSelectPosition, onSlChange, onTpChange])
 
   // 定位：只有「被选中的那个窗口」把视野挪到这笔单上，另一个靠时间范围同步跟过来
   useEffect(() => {
@@ -1314,6 +1454,14 @@ export function SecondaryChart({
           data-secondary-overlay="1"
           className="pointer-events-none absolute inset-0 z-10 h-full w-full"
         />
+        {pendingOrder && (
+          <PendingTicket
+            order={pendingOrder}
+            priceToY={pendingPriceToY}
+            onConfirm={() => pendingCbRef.current.confirm?.()}
+            onCancel={() => pendingCbRef.current.cancel?.()}
+          />
+        )}
       </div>
     </div>
   )

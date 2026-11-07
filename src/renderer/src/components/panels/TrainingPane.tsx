@@ -2357,7 +2357,8 @@ export function TrainingPane(): React.JSX.Element {
                   // 选中副窗时由副窗定位（各窗的「150 根」跨度不同，不能同时定位）
                   focusTarget={!activeSub}
                   onClearFocus={() => setFocusedTrade(null)}
-                  pendingOrder={pendingView}
+                  // 待确认单只画在“当前选中的窗口”：选中副窗时主图不再显示票面
+                  pendingOrder={activeSub ? null : pendingView}
                   onPendingSlChange={(price) => setPendingRisk('sl', price)}
                   onPendingTpChange={(price) => setPendingRisk('tp', price)}
                   onPendingConfirm={() => {
@@ -2439,6 +2440,14 @@ export function TrainingPane(): React.JSX.Element {
                             onSlChange={setSl}
                             onTpChange={setTp}
                             riskPnlLabel={riskPnlLabel}
+                            // 待确认单跟着当前选中的窗口走：在副窗按 B/S 就在副窗画票面和价格线
+                            pendingOrder={activePane === sub.id ? pendingView : null}
+                            onPendingSlChange={(price) => setPendingRisk('sl', price)}
+                            onPendingTpChange={(price) => setPendingRisk('tp', price)}
+                            onPendingConfirm={() => {
+                              if (orderDraft) setOrderSide(orderDraft.side)
+                            }}
+                            onPendingCancel={() => setOrderDraft(null)}
                             focusedTrade={focusedTrade}
                             focusSeq={focusSeq}
                             followFocus={activePane === sub.id}
