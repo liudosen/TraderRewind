@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   BookOpen,
@@ -7,6 +7,7 @@ import {
   ArrowUpRight,
   ChevronsLeft,
   ChevronsRight,
+  ChevronDown,
   LineChart
 } from 'lucide-react'
 import { useTrainingStore, rowToTrade, type ClosedTrade } from '../../stores/training-store'
@@ -18,6 +19,13 @@ import { formatSigned, formatSpentTime } from '../../utils/format'
 import { useT } from '../../i18n'
 import { useTimezoneStore } from '../../stores/timezone-store'
 import { fmtTzDate, fmtTzShort, tzPartsFromMs } from '@shared/types/timezone'
+import {
+  ensureSessionGroups,
+  loadSessionGroups,
+  saveSessionGroups,
+  toggleSessionGroup,
+  type SessionGroup
+} from '../../utils/session-groups'
 
 /** db:listCompletedSessions 返回的行 */
 interface CompletedRow {
@@ -67,6 +75,10 @@ function fmtDateTime(ts: number | null, tz: string): string {
 }
 
 const LIST_OPEN_KEY = 'tr:journalList'
+const LIST_W_KEY = 'tr:journalW'
+const DEFAULT_LIST_W = 350
+const MIN_LIST_W = 280
+const MAX_LIST_W = 620
 
 /**
  * 切到 K 线图再回来时，得站在「原来那一集、原来那一笔」上。
@@ -101,6 +113,49 @@ export function JournalPane(): React.JSX.Element {
   useEffect(() => {
     localStorage.setItem(LIST_OPEN_KEY, listOpen ? '1' : '0')
   }, [listOpen])
+
+  /** 左侧列表宽度：拖动右边缘调整，和训练页分开记 */
+  const [listW, setListW] = useState<number>(() => {
+    const n = Number(localStorage.getItem(LIST_W_KEY))
+    return Number.isFinite(n) && n > 0
+      ? Math.max(MIN_LIST_W, Math.min(MAX_LIST_W, n))
+      : DEFAULT_LIST_W
+  })
+  const listResizeRef = useRef<{ startX: number; startW: number } | null>(null)
+  useEffect(() => {
+    localStorage.setItem(LIST_W_KEY, String(listW))
+  }, [listW])
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const r = listResizeRef.current
+      if (!r) return
+      setListW(Math.max(MIN_LIST_W, Math.min(MAX_LIST_W, r.startW + e.clientX - r.startX)))
+    }
+    const onUp = () => {
+      if (!listResizeRef.current) return
+      listResizeRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
+
+  /** 与训练页共用同一份分组元数据，保证两边结构同步 */
+  const [sessionGroups, setSessionGroups] = useState<SessionGroup[]>(loadSessionGroups)
+  useEffect(() => {
+    saveSessionGroups(sessionGroups)
+  }, [sessionGroups])
+  useEffect(() => {
+    if (rows.length === 0) return
+    setSessionGroups((prev) =>
+      ensureSessionGroups(prev, rows.map((r) => String(r.id)), t('training.ungrouped'))
+    )
+  }, [rows, t])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -205,7 +260,10 @@ export function JournalPane(): React.JSX.Element {
     <div className="flex h-full">
       {/* 左：已完成的回测集 */}
       {listOpen ? (
-      <aside className="flex w-[350px] shrink-0 flex-col border-r border-[var(--border-subtle)] bg-[var(--surface-1)]">
+      <aside
+        className="relative flex shrink-0 flex-col border-r border-[var(--border-subtle)] bg-[var(--surface-1)]"
+        style={{ width: listW }}
+      >
         <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-2">
           <BookOpen size={14} className="text-[var(--text-muted)]" />
           <span className="text-[13.5px] font-semibold text-[var(--text-primary)]">
@@ -241,7 +299,32 @@ export function JournalPane(): React.JSX.Element {
             </div>
           )}
 
-          {rows.map((r) => {
+          {sessionGroups.map((g) => {
+            const items = g.sessionIds
+              .map((id) => rows.find((r) => String(r.id) === id))
+              .filter((r): r is CompletedRow => !!r)
+            if (items.length === 0) return null
+            return (
+              <div key={g.id} className="border-b border-[var(--border-subtle)]/40">
+                <div className="flex items-center gap-1 px-2 py-1.5">
+                  <button
+                    onClick={() => setSessionGroups((prev) => toggleSessionGroup(prev, g.id))}
+                    title={g.collapsed ? t('training.expandGroup') : t('training.collapseGroup')}
+                    className="shrink-0 rounded p-0.5 text-[var(--text-faint)] hover:bg-[var(--surface-3)] hover:text-[var(--text-secondary)]"
+                  >
+                    <ChevronDown
+                      size={12}
+                      className={clsx('transition-transform', g.collapsed && '-rotate-90')}
+                    />
+                  </button>
+                  <span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold uppercase tracking-wide text-[var(--text-faint)]">
+                    {g.name}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-faint)]">
+                    {items.length}
+                  </span>
+                </div>
+                {!g.collapsed && items.map((r) => {
             const active = r.id === selectedId
             const winRate = r.trade_count > 0 ? (r.win_count / r.trade_count) * 100 : 0
             const rangeText = `${fmtDate(r.start_time, r.tz ?? timezone)} ~ ${fmtDate(r.end_time, r.tz ?? timezone)}`
@@ -323,8 +406,23 @@ export function JournalPane(): React.JSX.Element {
                 </div>
               </button>
             )
+                })}
+              </div>
+            )
           })}
         </div>
+
+        {/* 右边缘拖拽：横向加宽 / 收窄已完成列表 */}
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault()
+            listResizeRef.current = { startX: e.clientX, startW: listW }
+            document.body.style.cursor = 'col-resize'
+            document.body.style.userSelect = 'none'
+          }}
+          title={t('journal.resizeList')}
+          className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize hover:bg-[var(--c-accent)]/60"
+        />
       </aside>
       ) : (
         <div className="flex w-8 shrink-0 flex-col items-center gap-2 border-r border-[var(--border-subtle)] bg-[var(--surface-1)] py-2">

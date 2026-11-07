@@ -183,6 +183,7 @@ const baseZh = {
   // ── 日志（已完成回测） ─────────────────────────────
   'journal.title': '已完成回测',
   'journal.hideList': '隐藏列表',
+  'journal.resizeList': '拖动调整已完成列表宽度',
   'journal.showList': '显示回测集列表',
   'journal.empty.title': '还没有完成的回测集',
   'journal.empty.desc': '在训练里把回放走到该区间最后一根 K 线，这次回测即记为完成，并出现在这里。',
@@ -536,6 +537,7 @@ const baseEn: Record<keyof typeof baseZh, string> = {
 
   'journal.title': 'Completed backtests',
   'journal.hideList': 'Hide list',
+  'journal.resizeList': 'Drag to resize the completed list',
   'journal.showList': 'Show session list',
   'journal.empty.title': 'No completed backtests yet',
   'journal.empty.desc':
