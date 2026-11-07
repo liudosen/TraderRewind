@@ -43,8 +43,9 @@ No Node, no toolchain, nothing to configure.
 
 | File | Who it's for | How to use |
 | --- | --- | --- |
-| `TraderRewind-<version>-setup.exe` | You want it properly installed | Run the installer, pick a directory if you like, then launch from the Start menu |
-| `TraderRewind-<version>-x64.zip` | You don't want to install anything | Unzip anywhere and run the `TraderRewind.exe` inside |
+| `TraderRewind-<version>-setup.exe` | Windows installation | Run the installer, pick a directory if you like, then launch from the Start menu |
+
+> Releases only ship `setup.exe`. The portable zip is a local build artifact and is no longer uploaded.
 
 **Requirements**: Windows 10 / 11 (64-bit). macOS and Linux need a build from source — see [Build and run](#build-and-run).
 

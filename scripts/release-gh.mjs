@@ -71,15 +71,15 @@ function githubToken() {
   return line.slice('password='.length).trim()
 }
 
-/** 这一版要上传的文件：安装程序 + 免安装包 */
+/** Release 只上传 Windows 安装程序；免安装包留在本地，不再发到远端 */
 function assets() {
   if (!fs.existsSync(outDir)) throw new Error(`找不到 ${path.basename(outDir)}/，先跑 npm run package:win（输出目录指到 release-${version}）`)
   const files = fs.readdirSync(outDir)
-  const pick = (re) => files.filter((f) => re.test(f))
-  const setup = pick(new RegExp(`^TraderRewind-${version.replace(/\./g, '\\.')}-setup\\.exe$`))
-  const zip = pick(new RegExp(`^TraderRewind-${version.replace(/\./g, '\\.')}-x64\\.zip$`))
-  const list = [...setup, ...zip].map((f) => path.join(outDir, f))
-  if (list.length === 0) throw new Error(`${path.basename(outDir)}/ 里没有 ${tag} 的安装包（只找到：${files.join('、')}）`)
+  const setup = files.filter((f) =>
+    new RegExp(`^TraderRewind-${version.replace(/\./g, '\\.')}-setup\\.exe$`).test(f)
+  )
+  const list = setup.map((f) => path.join(outDir, f))
+  if (list.length === 0) throw new Error(`${path.basename(outDir)}/ 里没有 ${tag} 的 setup 安装包（只找到：${files.join('、')}）`)
   return list
 }
 
@@ -107,8 +107,7 @@ const slug = repoSlug()
 const body =
   changelogSection(version) +
   '\n\n---\n\n' +
-  `**Windows**：\`TraderRewind-${version}-setup.exe\` 双击安装（已装旧版的会静默升级、保留数据）；` +
-  `免安装版 \`TraderRewind-${version}-x64.zip\` 解压即用。`
+  `**Windows**：\`TraderRewind-${version}-setup.exe\` 双击安装（已装旧版的会静默升级、保留数据）。`
 
 console.log(`仓库   ${slug}\n版本   ${version}（tag ${tag}）\n输出   ${path.relative(root, outDir)}/`)
 const files = assets()

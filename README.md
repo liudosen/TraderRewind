@@ -43,8 +43,9 @@
 
 | 文件 | 适用场景 | 怎么用 |
 | --- | --- | --- |
-| `TraderRewind-<版本>-setup.exe` | 想正常装到电脑上 | 双击安装，可自选安装目录；装完从开始菜单启动 |
-| `TraderRewind-<版本>-x64.zip` | 不想装、想放 U 盘带走 | 解压到任意目录，双击里面的 `TraderRewind.exe` |
+| `TraderRewind-<版本>-setup.exe` | Windows 安装 | 双击安装，可自选安装目录；装完从开始菜单启动 |
+
+> Release 只提供 `setup.exe`。免安装包属于本地构建产物，不再上传到远端。
 
 **系统要求**：Windows 10 / 11（64 位）。macOS 与 Linux 需要从源码构建，见[开发与构建](#开发与构建)。
 
