@@ -1943,13 +1943,23 @@ export function ReplayChart({
     /**
      * 这一格推进之前用户在看哪几根。
      *
-     * 播放推进必须**一根都不动**：不管窗口贴不贴最右边，都不许自己追最新。
+     * 播放推进时：贴边就跟着新 K 线平移同样根数，历史区就一根不动。
      * setData / update 之后 lightweight-charts 会拿“新的最后一根”重算右偏移，
-     * 为了确保视野一点不差，先把逻辑范围记下来，数据灌完再原样设回去。
+     * 所以先把逻辑范围和当时是否贴边记下来，数据灌完再按规则设回去。
      *
      * 换回测集 / 切周期不走这条还原：那两个分支本来就要重新定位到一段有意义的窗口。
      */
     const prevLogical = chart.timeScale().getVisibleLogicalRange()
+    const prevLen = prevLenRef.current
+    /**
+     * 这一格推进前，视窗是不是已经贴着最新。
+     *
+     * 贴着最新时允许跟着新 K 线往右平移同样的根数（否则最新一根会从右边溢出去）；
+     * 用户已经往回翻到历史区时，逻辑范围必须原样钉死，一步都不许动。
+     * 两种需求不矛盾：区别只在“推之前右端在不在最新附近”。
+     */
+    const wasAtLiveEdge =
+      prevLogical != null && prevLen > 0 && prevLogical.to >= prevLen - 3
 
     if (appendedOne) {
       const bar = partialBar ?? bars[cursor]
@@ -2047,21 +2057,26 @@ export function ReplayChart({
     refreshFuture(tfChanged || !sameDataset)
 
     /**
-     * 同一次回放里的数据推进：把视野原样钉回去。
+     * 同一次回放里的数据推进：把视野按“是否贴边”摆回去。
      *
-     * 数据更新（setData / update / 重铺未来占位）都可能让图表按新的最后一根
-     * 重新落定右偏移。这里统一在最后把逻辑范围设回更新前的值：
-     * 不管这一格走了 1 根还是 30 根（选中 M30 副窗时主图 M5 一步会走 6 根），
-     * 视野都保持原位；只有换回测集 / 切周期才允许重新定位。
+     *  · 贴边：整体右移这一格新增的根数，保持宽度和右侧未来空白不变 ——
+     *    最新 K 线始终落在窗内，不会从右边溢出去；
+     *  · 历史区：原样钉死，不自动跟随、不自动归正。
+     *
+     * 数据更新（setData / update / 重铺未来占位）都会让图表按新的最后一根
+     * 重算右偏移，所以两种分支都要在最后显式设一次。
      */
     if (sameDataset && !tfChanged && prevLogical && !pointerDownRef.current) {
+      const delta = Math.max(0, visibleCount - prevLen)
+      const shift = wasAtLiveEdge ? delta : 0
+      const target = { from: prevLogical.from + shift, to: prevLogical.to + shift }
       autoRangeAtRef.current = performance.now()
-      chart.timeScale().setVisibleLogicalRange({ from: prevLogical.from, to: prevLogical.to })
+      chart.timeScale().setVisibleLogicalRange(target)
       requestAnimationFrame(() => {
         if (pointerDownRef.current) return
         const c = chartRef.current
         if (!c) return
-        c.timeScale().setVisibleLogicalRange({ from: prevLogical.from, to: prevLogical.to })
+        c.timeScale().setVisibleLogicalRange(target)
       })
     }
 

@@ -228,6 +228,9 @@ export function SecondaryChart({
   /** 主图进 ref：alignToMain 挂在 rAF 里，闭包读不到最新 props */
   const mainChartRef = useRef<IChartApi | null>(mainChart)
   mainChartRef.current = mainChart
+  /** 主图 K 线 series 也进 ref：判断主图是不是贴着最新时要用它的根数 */
+  const mainSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(mainSeries)
+  mainSeriesRef.current = mainSeries
 
   /** 成交连线与定位都读 ref：它们挂在 rAF / 事件回调里，闭包读不到最新 props */
   const tradesRef = useRef<ClosedTrade[]>(trades)
@@ -993,18 +996,58 @@ export function SecondaryChart({
     })
   }, [])
 
+  /** 主图是不是已经贴着它自己的最新一根（= 主图在播最新，不是在翻历史） */
+  const mainAtLiveEdge = useCallback((): boolean => {
+    const main = mainChartRef.current
+    const series = mainSeriesRef.current
+    if (!main || !series) return false
+    const data = series.data()
+    if (data.length === 0) return false
+    const lr = main.timeScale().getVisibleLogicalRange()
+    if (!lr) return false
+    return lr.to >= data.length - 3
+  }, [])
+
+  /**
+   * 跟随窗口落到自己的最新一根 + 未来空白。
+   *
+   * 主图周期比副窗粗时，主图可见范围的右端可能只到 M30 的桶起点（比如 15:30），
+   * 而副窗 M1 已经有 15:55 的 K 线 —— 光按主图的时间范围设过去，副窗最新几根
+   * 会一直落在右边框外。这里改用副窗自己的最后一根做锚点，保留当前根数。
+   */
+  const seatFollowLatest = useCallback((): void => {
+    const chart = chartRef.current
+    const list = barsRef.current
+    if (!chart || list.length === 0) return
+    const lr = chart.timeScale().getVisibleLogicalRange()
+    const span = lr ? lr.to - lr.from : DEFAULT_VISIBLE_BARS
+    if (!Number.isFinite(span) || span <= 0) return
+    const pad = Math.max(
+      2,
+      Math.min(30, Math.round(span * 0.1), Math.max(2, Math.floor(span) - 2))
+    )
+    const next = latestLogicalRange(list.length - 1, span, pad)
+    muteRef.current.self = performance.now() + SYNC_MUTE_MS
+    chart.timeScale().setVisibleLogicalRange({ from: next.from, to: next.to })
+  }, [])
+
   /**
    * 把主图的视野推给本窗。
    *
-   * 推完的下一帧再补右侧未来空白：`setVisibleRange` 会被副窗自己的最后
-   * 一根 K 线夹一下，必须等它落定后再按实际逻辑范围补，否则算出来的空白会偏。
+   * 推完的下一帧再补右侧：主图贴最新时，按本窗自己的最新一根重新落位
+   * （避免粗周期主图把细周期副窗的最新几根挡在右边界外）；主图在翻历史时
+   * 只补未来空白，保持同一段历史。
    */
   const applyMainRange = useCallback(
     (r: Range): void => {
       pushToSelf(r)
-      requestAnimationFrame(ensureFollowSpace)
+      requestAnimationFrame(() => {
+        if (!followRef.current) return
+        if (mainAtLiveEdge()) seatFollowLatest()
+        else ensureFollowSpace()
+      })
     },
-    [ensureFollowSpace, pushToSelf]
+    [ensureFollowSpace, mainAtLiveEdge, pushToSelf, seatFollowLatest]
   )
 
   /**
@@ -1067,17 +1110,20 @@ export function SecondaryChart({
     }
 
     /**
-     * setData 之前先记下当前视野（逻辑范围）和这份源数据是不是换过。
+     * setData 之前先记下当前视野（逻辑范围）、旧根数和这份源数据是不是换过。
      *
-     *  · 同一次回放里继续推进：把逻辑范围原样设回去 —— 用户看的是哪几根就还是哪几根，
-     *    新 K 线只会出现在右边外面，绝不会把窗口一路往最新推；
+     *  · 跟随 + 本来就贴着最新：整体右移这一格新增的根数，最新 K 线不会溢出右边框；
+     *  · 独立 / 跟随但已经翻到历史：把逻辑范围原样设回去，一步都不动；
      *  · 第一次落图 / 换了会话：落到「最新一根 + 右侧留白」，保证一打开就能看见最新 K 线。
      *
-     * 旧实现只让“选中的窗口”贴边时追最新、其它窗口用时间范围往回钉，
-     * 结果一个窗口跟着跑、另一个窗口被越钉越靠后；现在统一成“谁都不动”。
+     * 跟随窗口靠主图的时间范围同步只能覆盖“主图自己动了”的情况；
+     * 主图不动、数据自己在长的时候，必须由这里按新增根数平移，否则最新 K 线会从右边溢出去。
      */
     const ts = chart.timeScale()
     const prev = ts.getVisibleLogicalRange()
+    const prevLen = lenRef.current
+    const wasAtLiveEdge = prev != null && prevLen > 0 && prev.to >= prevLen - 1
+    const delta = Math.max(0, bars.length - prevLen)
     const datasetChanged =
       prevRawBarsRef.current !== null && prevRawBarsRef.current !== rawBars
     prevRawBarsRef.current = rawBars
@@ -1100,11 +1146,38 @@ export function SecondaryChart({
       return
     }
 
-    // 同一次回放：视野一根都不许动
-    const keep = { from: prev.from, to: prev.to }
-    pinLogicalRange(keep)
-    requestAnimationFrame(() => pinLogicalRange(keep))
-  }, [alignToMain, bars, pinLogicalRange, rawBars, timeframe])
+    // 同一次回放：跟随窗口贴边时跟着新增根数平移；独立/历史区原样钉死
+    const followMainLive = followRef.current && mainAtLiveEdge()
+    const followLive = followRef.current && wasAtLiveEdge && delta > 0
+    if (followMainLive) {
+      /**
+       * 主图在播最新：不要按主图的桶时间对齐，直接以本窗自己的最新一根落位。
+       * 主图 M30、副窗 M1 时，主图右端可能只到 15:30，副窗已经有 15:55，
+       * 按主图时间设过去会把 25 分钟的新 K 线全甩到右边框外。
+       */
+      seatFollowLatest()
+      requestAnimationFrame(seatFollowLatest)
+      return
+    }
+    const target = followLive
+      ? { from: prev.from + delta, to: prev.to + delta }
+      : { from: prev.from, to: prev.to }
+    pinLogicalRange(target)
+    requestAnimationFrame(() => {
+      pinLogicalRange(target)
+      // 平移后顺手确认右侧未来空白还在（原本贴着右边框的窗口会在这里补出来）
+      if (followLive) ensureFollowSpace()
+    })
+  }, [
+    alignToMain,
+    bars,
+    ensureFollowSpace,
+    mainAtLiveEdge,
+    pinLogicalRange,
+    rawBars,
+    seatFollowLatest,
+    timeframe
+  ])
 
   // ---------- 同步：只订阅「主图 ↔ 自己」这一条边 ----------
   /**
