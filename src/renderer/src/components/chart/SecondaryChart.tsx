@@ -156,6 +156,11 @@ function latestRightPad(tf: string): number {
   return Math.max(2, Math.min(20, Math.round(LIVE_MARGIN_SECONDS / secs)))
 }
 
+/** 跟随窗口右侧留白：约视窗宽度的 10%，夹在 2~30 根 */
+function followPad(span: number): number {
+  return Math.max(2, Math.min(30, Math.round(span * 0.1), Math.max(2, Math.floor(span) - 2)))
+}
+
 /** 把视野落到「最新一根 + 右侧留白」，保持原来的根数（夹在合理范围内） */
 function latestLogicalRange(lastIndex: number, span: number, pad: number): Range {
   const n = Math.max(1, Math.min(2000, Math.round(span)))
@@ -984,10 +989,7 @@ export function SecondaryChart({
     if (lr.to < last - 1) return
     const span = lr.to - lr.from
     if (!Number.isFinite(span) || span <= 0) return
-    const pad = Math.max(
-      2,
-      Math.min(30, Math.round(span * 0.1), Math.max(2, Math.floor(span) - 2))
-    )
+    const pad = followPad(span)
     if (lr.to >= last + pad) return
     muteRef.current.self = performance.now() + SYNC_MUTE_MS
     chart.timeScale().setVisibleLogicalRange({
@@ -1009,29 +1011,6 @@ export function SecondaryChart({
   }, [])
 
   /**
-   * 跟随窗口落到自己的最新一根 + 未来空白。
-   *
-   * 主图周期比副窗粗时，主图可见范围的右端可能只到 M30 的桶起点（比如 15:30），
-   * 而副窗 M1 已经有 15:55 的 K 线 —— 光按主图的时间范围设过去，副窗最新几根
-   * 会一直落在右边框外。这里改用副窗自己的最后一根做锚点，保留当前根数。
-   */
-  const seatFollowLatest = useCallback((): void => {
-    const chart = chartRef.current
-    const list = barsRef.current
-    if (!chart || list.length === 0) return
-    const lr = chart.timeScale().getVisibleLogicalRange()
-    const span = lr ? lr.to - lr.from : DEFAULT_VISIBLE_BARS
-    if (!Number.isFinite(span) || span <= 0) return
-    const pad = Math.max(
-      2,
-      Math.min(30, Math.round(span * 0.1), Math.max(2, Math.floor(span) - 2))
-    )
-    const next = latestLogicalRange(list.length - 1, span, pad)
-    muteRef.current.self = performance.now() + SYNC_MUTE_MS
-    chart.timeScale().setVisibleLogicalRange({ from: next.from, to: next.to })
-  }, [])
-
-  /**
    * 把主图的视野推给本窗。
    *
    * 推完的下一帧再补右侧：主图贴最新时，按本窗自己的最新一根重新落位
@@ -1040,14 +1019,33 @@ export function SecondaryChart({
    */
   const applyMainRange = useCallback(
     (r: Range): void => {
+      const chart = chartRef.current
+      const list = barsRef.current
+      if (!chart || list.length === 0) return
+
+      /**
+       * 主图在播最新、而本窗周期更细时，主图推过来的右端只是它自己的桶时间。
+       * 如果先按这个时间推过去、下一帧再跳到本窗最新，画面会“闪一下才归位”。
+       * 这里直接一步落到本窗最新一根，同一个事件循环内完成，不经过中间态。
+       */
+      if (followRef.current && mainAtLiveEdge()) {
+        const lr = chart.timeScale().getVisibleLogicalRange()
+        const span = lr ? lr.to - lr.from : DEFAULT_VISIBLE_BARS
+        if (!Number.isFinite(span) || span <= 0) return
+        const next = latestLogicalRange(list.length - 1, span, followPad(span))
+        muteRef.current.self = performance.now() + SYNC_MUTE_MS
+        chart.timeScale().setVisibleLogicalRange({ from: next.from, to: next.to })
+        requestAnimationFrame(() => {
+          if (!followRef.current) return
+          chart.timeScale().setVisibleLogicalRange({ from: next.from, to: next.to })
+        })
+        return
+      }
+
       pushToSelf(r)
-      requestAnimationFrame(() => {
-        if (!followRef.current) return
-        if (mainAtLiveEdge()) seatFollowLatest()
-        else ensureFollowSpace()
-      })
+      requestAnimationFrame(ensureFollowSpace)
     },
-    [ensureFollowSpace, mainAtLiveEdge, pushToSelf, seatFollowLatest]
+    [ensureFollowSpace, mainAtLiveEdge, pushToSelf]
   )
 
   /**
@@ -1121,9 +1119,6 @@ export function SecondaryChart({
      */
     const ts = chart.timeScale()
     const prev = ts.getVisibleLogicalRange()
-    const prevLen = lenRef.current
-    const wasAtLiveEdge = prev != null && prevLen > 0 && prev.to >= prevLen - 1
-    const delta = Math.max(0, bars.length - prevLen)
     const datasetChanged =
       prevRawBarsRef.current !== null && prevRawBarsRef.current !== rawBars
     prevRawBarsRef.current = rawBars
@@ -1148,36 +1143,26 @@ export function SecondaryChart({
 
     // 同一次回放：跟随窗口贴边时跟着新增根数平移；独立/历史区原样钉死
     const followMainLive = followRef.current && mainAtLiveEdge()
-    const followLive = followRef.current && wasAtLiveEdge && delta > 0
     if (followMainLive) {
       /**
        * 主图在播最新：不要按主图的桶时间对齐，直接以本窗自己的最新一根落位。
        * 主图 M30、副窗 M1 时，主图右端可能只到 15:30，副窗已经有 15:55，
        * 按主图时间设过去会把 25 分钟的新 K 线全甩到右边框外。
+       *
+       * 目标范围用**更新前**的 prev 宽度算，并且 setData 后立刻设回去；
+       * 不能等下一帧再读“已经被 setData 撑歪”的范围，否则画面会闪一下才归位。
        */
-      seatFollowLatest()
-      requestAnimationFrame(seatFollowLatest)
+      const span = prev.to - prev.from
+      const next = latestLogicalRange(bars.length - 1, span, followPad(span))
+      pinLogicalRange(next)
+      requestAnimationFrame(() => pinLogicalRange(next))
       return
     }
-    const target = followLive
-      ? { from: prev.from + delta, to: prev.to + delta }
-      : { from: prev.from, to: prev.to }
+    // 主图在看历史 / 独立窗口：逻辑范围原样钉死，一步都不动
+    const target = { from: prev.from, to: prev.to }
     pinLogicalRange(target)
-    requestAnimationFrame(() => {
-      pinLogicalRange(target)
-      // 平移后顺手确认右侧未来空白还在（原本贴着右边框的窗口会在这里补出来）
-      if (followLive) ensureFollowSpace()
-    })
-  }, [
-    alignToMain,
-    bars,
-    ensureFollowSpace,
-    mainAtLiveEdge,
-    pinLogicalRange,
-    rawBars,
-    seatFollowLatest,
-    timeframe
-  ])
+    requestAnimationFrame(() => pinLogicalRange(target))
+  }, [alignToMain, bars, mainAtLiveEdge, pinLogicalRange, rawBars, timeframe])
 
   // ---------- 同步：只订阅「主图 ↔ 自己」这一条边 ----------
   /**
