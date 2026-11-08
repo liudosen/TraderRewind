@@ -783,6 +783,13 @@ export function ReplayChart({
    * 后半段会突然被「已有止盈」的规则锁住，手感像是拖不动了。
    */
   const riskModeRef = useRef<'free' | 'sl' | 'tp' | null>(null)
+  /**
+   * 从开仓线自由拖时，第一次确定的方向要锁死。
+   *
+   * 不锁的话，手指从开仓价往下拖，最初 1px 抖动向上就会先创建一条极窄止盈，
+   * 随后越过开仓价才建止损 —— 两条线同时留下，下一根直接打到止盈。
+   */
+  const riskKindRef = useRef<'sl' | 'tp' | null>(null)
   /** 正在拖的是哪一笔持仓 */
   const dragPosRef = useRef<string | null>(null)
   /** 按下价格线时的 y / 是否已经真的拖动过（防止点一下票面就多出一条极窄止盈） */
@@ -1694,6 +1701,7 @@ export function ReplayChart({
       metricsRef.current = null
       metricsDirtyRef.current = true
       riskModeRef.current = null
+      riskKindRef.current = null
       dragPosRef.current = null
       dragMovedRef.current = false
       prevLenRef.current = 0
@@ -2737,6 +2745,7 @@ export function ReplayChart({
          * 已有止盈 → 只能拖止损；已有止损 → 只能拖止盈。
          */
         if (hit.key === 'risk') {
+          riskKindRef.current = null
           const src =
             hit.id === PENDING_ID
               ? pendingRef.current
@@ -3061,14 +3070,16 @@ export function ReplayChart({
           const byDir: 'sl' | 'tp' =
             pend.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
           const mode = riskModeRef.current
-          const kind: 'sl' | 'tp' =
-            dragRef.current === 'sl' || dragRef.current === 'tp'
-              ? dragRef.current
-              : mode === 'sl'
-                ? 'sl'
-                : mode === 'tp'
-                  ? 'tp'
-                  : byDir
+          let kind: 'sl' | 'tp'
+          if (dragRef.current === 'sl' || dragRef.current === 'tp') {
+            kind = dragRef.current
+          } else if (mode === 'sl' || mode === 'tp') {
+            kind = mode
+          } else {
+            // 第一次越过 3px 后定方向，之后整段拖动不再翻转
+            if (!riskKindRef.current) riskKindRef.current = byDir
+            kind = riskKindRef.current
+          }
           if (kind === 'sl') pendingCbRef.current.sl?.(price)
           else pendingCbRef.current.tp?.(price)
           return
@@ -3102,7 +3113,12 @@ export function ReplayChart({
           const byDir = pos.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
 
           const mode = riskModeRef.current
-          const kind = mode === 'sl' ? 'sl' : mode === 'tp' ? 'tp' : byDir
+          let kind: 'sl' | 'tp'
+          if (mode === 'sl' || mode === 'tp') kind = mode
+          else {
+            if (!riskKindRef.current) riskKindRef.current = byDir
+            kind = riskKindRef.current
+          }
 
           if (kind === 'sl') onSlChange(pos.id, price)
           else onTpChange(pos.id, price)
@@ -3128,6 +3144,7 @@ export function ReplayChart({
         dragRef.current = null
         dragPosRef.current = null
         riskModeRef.current = null
+        riskKindRef.current = null
         dragMovedRef.current = false
         el.style.cursor = ''
         chartRef.current?.applyOptions({ handleScroll: true, handleScale: true })

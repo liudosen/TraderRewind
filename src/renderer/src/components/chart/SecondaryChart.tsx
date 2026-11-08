@@ -236,6 +236,8 @@ export function SecondaryChart({
     startY: number
     moved: boolean
   } | null>(null)
+  /** 自由拖开仓线时，第一次确定的方向锁死，避免 1px 抖动先建一条极窄止盈 */
+  const riskKindRef = useRef<'sl' | 'tp' | null>(null)
   /** 待确认单快照 + 价格线；只在当前选中的副窗里存在 */
   const pendingRef = useRef<PendingOrderView | null>(pendingOrder ?? null)
   pendingRef.current = pendingOrder ?? null
@@ -977,6 +979,7 @@ export function SecondaryChart({
       const mode: 'free' | 'sl' | 'tp' =
         src.sl == null && src.tp == null ? 'free' : src.sl == null ? 'sl' : 'tp'
       posDragRef.current = { id: hit.id, key: hit.key, mode, startY: y, moved: false }
+      riskKindRef.current = null
       if (!pending) onSelectPosition(hit.id)
       chart.applyOptions({ handleScroll: false, handleScale: false })
       host.style.cursor = 'ns-resize'
@@ -1013,7 +1016,12 @@ export function SecondaryChart({
           const up = Number(price) > pend.entry
           const byDir: 'sl' | 'tp' =
             pend.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
-          const kind = drag.mode === 'sl' ? 'sl' : drag.mode === 'tp' ? 'tp' : byDir
+          let kind: 'sl' | 'tp'
+          if (drag.mode === 'sl' || drag.mode === 'tp') kind = drag.mode
+          else {
+            if (!riskKindRef.current) riskKindRef.current = byDir
+            kind = riskKindRef.current
+          }
           if (kind === 'sl') pendingCbRef.current.sl?.(Number(price))
           else pendingCbRef.current.tp?.(Number(price))
         }
@@ -1034,7 +1042,12 @@ export function SecondaryChart({
         const up = Number(price) > pos.entryPrice
         const byDir: 'sl' | 'tp' =
           pos.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
-        const kind = drag.mode === 'sl' ? 'sl' : drag.mode === 'tp' ? 'tp' : byDir
+        let kind: 'sl' | 'tp'
+        if (drag.mode === 'sl' || drag.mode === 'tp') kind = drag.mode
+        else {
+          if (!riskKindRef.current) riskKindRef.current = byDir
+          kind = riskKindRef.current
+        }
         if (kind === 'sl') onSlChange(pos.id, Number(price))
         else onTpChange(pos.id, Number(price))
       }
@@ -1044,6 +1057,7 @@ export function SecondaryChart({
     const onUp = (): void => {
       if (!posDragRef.current) return
       posDragRef.current = null
+      riskKindRef.current = null
       host.style.cursor = ''
       chartRef.current?.applyOptions({ handleScroll: true, handleScale: true })
     }
