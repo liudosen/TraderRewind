@@ -420,9 +420,10 @@ interface TrainingState {
   /**
    * 推进回放。
    *
-   * @param stepSeconds 一步走多少秒。不传 = 当前显示周期的一根 K 线（老行为）；
-   *   训练页会按**选中的那个窗口**的周期传进来 —— 主图 M30、副窗 M1 时选中副窗，
-   *   一次就只走 1 分钟，副窗才能一根一根看。
+   * @param stepSeconds 一步走多少秒。
+   *   不传 = 走完**下一根完整的主图 K 线**（落到桶末尾）；
+   *   训练页在选中副窗时会按那个窗口的周期传进来 —— 主图 M30、副窗 M1 时选中副窗，
+   *   一次就只走 1 分钟，主图出现未完成的 M30 是预期行为。
    */
   advance: (stepSeconds?: number) => void
   markCompleted: () => void
@@ -1076,22 +1077,21 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       }
 
       /**
-       * 精确到分钟的回放位置。
+       * 已揭示到的**分钟**，不是最后一根聚合 K 线的桶起点。
        *
-       * 会话里存的 `current_bar_time` 现在就是「最后一根已揭示的 1 分钟 K 线」，
-       * 直接用它，别退回 `bars[cursor].time` —— 那是当前显示周期的桶起点，
-       * 在 H4 上等于把位置往回吞掉将近 4 小时。
-       * 老数据存的是当时周期的桶起点，也是合法时间戳，照样能用（只是粗一点）。
+       * 用 `lastBarTime`（桶起点）来夹取会把「09:44 保存的最后一根 M5」压回 09:40，
+       * 重开会话后最后一根变成只含 1 分钟的残线。数据末尾也可能正好落在这一根上，
+       * 所以这里必须用最后一根 1 分钟原始 K 线的时间。
        */
-      const lastBarTime = bars.length > 0 ? bars[bars.length - 1].time : 0
+      const lastRawTime = rawBars.length > 0 ? rawBars[rawBars.length - 1].time : 0
       const cursorBar = bars[cursor]
       const cursorTime =
         session.completed_at != null
-          ? lastBarTime
+          ? lastRawTime
           : session.current_bar_time != null &&
               bars.length > 0 &&
               session.current_bar_time >= bars[0].time
-            ? Math.min(session.current_bar_time, lastBarTime)
+            ? Math.min(session.current_bar_time, lastRawTime)
             : // 全新会话：起点那根算「已走完」，否则第一眼会看到一根只有 1 分钟的残线
               cursorBar
               ? bucketEndTime(cursorBar.time, tf, rawBars)
@@ -1345,11 +1345,16 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
     /**
      * 这一步走到哪一分钟。
      *
-     * 正常按调用方给的秒数走（选中的窗口是 M1 就走 60 秒）；
-     * 没给（或给的是 0）就退回「当前显示周期的一根」，跟以前一模一样。
-     * 日历周期（W1/MN1/Q1/Y1）没有固定秒数，也只能退回老口径：落到下一根的末尾。
+     * 传了 stepSeconds（选中副窗）就按这个步长走：M1 副窗就一分钟一分钟地推进，
+     * 主图 M5 出现只聚合了 1~4 分钟的未完成 K 线是预期行为。
+     *
+     * 没传（选中主图）就退回「下一根完整 K 线」的老口径：直接落到下一根主图 K 线的
+     * 桶末尾。不能写成 `from + timeframeSeconds(timeframe)` —— cursorTime 可能停在
+     * 某一根内部（比如刚在 M1 副窗里走了几分钟），00:18 + 300 会到 00:23，
+     * 新的 M5 只收进 4 根 1 分钟，最后一根永远差一分钟，看起来像播放少了。
+     * 日历周期没有固定秒数，也走这个分支。
      */
-    const step = stepSeconds && stepSeconds > 0 ? stepSeconds : timeframeSeconds(timeframe)
+    const step = stepSeconds && stepSeconds > 0 ? stepSeconds : 0
     let to: number
     if (step > 0) {
       to = Math.min(from + step, lastEnd)

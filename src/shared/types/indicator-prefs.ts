@@ -17,6 +17,7 @@ import {
   resolveParams,
   type IndicatorId,
   type IndicatorInstance,
+  type IndicatorKind,
   type OverlayId,
   type SubPaneId
 } from '../utils/indicators'
@@ -34,6 +35,17 @@ export interface IndicatorPrefs {
   subPanes: IndicatorInstance[]
   /** 用户是否亲手改过：true 时这一套配置在所有回测集里通用 */
   customized: boolean
+}
+
+/**
+ * 一个窗口自己的指标配置。
+ *
+ * 主图沿用用户级 indicatorPrefs；副窗各存一份（跟着窗口布局一起持久化），
+ * 这样在哪个窗口添加指标就只影响那个窗口。
+ */
+export interface IndicatorSet {
+  overlays: IndicatorInstance[]
+  subPanes: IndicatorInstance[]
 }
 
 /** 出厂默认：什么指标都不显示 */
@@ -112,18 +124,31 @@ function normalizeList(raw: unknown, allowed: string[]): IndicatorInstance[] {
   return out
 }
 
+/**
+ * 归一化某一类指标列表（主图叠加 / 副图），供单个窗口的配置复用。
+ *
+ * 副窗的指标跟着窗口一起存在 localStorage 里，读回来时也要过一遍这里 ——
+ * 参数越界、颜色写坏、uid 重复都不能把图表带崩。
+ */
+export function normalizeIndicatorList(
+  raw: unknown,
+  kind: IndicatorKind
+): IndicatorInstance[] {
+  if (kind === 'overlay' && Array.isArray(raw) && raw.some((x) => typeof x === 'string')) {
+    return fromLegacyOverlays(raw)
+  }
+  return normalizeList(raw, kind === 'overlay' ? OVERLAY_IDS : SUB_PANE_IDS)
+}
+
 /** 任意输入 → 合法配置，非法字段回退默认 */
 export function normalizeIndicatorPrefs(value: unknown): IndicatorPrefs {
   const raw = (value ?? {}) as Record<string, unknown>
 
-  const overlays =
-    Array.isArray(raw.overlays) && raw.overlays.some((x) => typeof x === 'string')
-      ? fromLegacyOverlays(raw.overlays)
-      : normalizeList(raw.overlays, OVERLAY_IDS)
+  const overlays = normalizeIndicatorList(raw.overlays, 'overlay')
 
   // 副图：新格式是数组；老格式是单个 'macd' 字符串
   const subPanes = Array.isArray(raw.subPanes)
-    ? normalizeList(raw.subPanes, SUB_PANE_IDS)
+    ? normalizeIndicatorList(raw.subPanes, 'sub')
     : typeof raw.subPane === 'string' && (SUB_PANE_IDS as string[]).includes(raw.subPane)
       ? [
           {

@@ -16,14 +16,20 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createChart,
   CandlestickSeries,
+  HistogramSeries,
+  LineSeries,
+  LineStyle,
   type CandlestickData,
+  type HistogramData,
   type IChartApi,
   type IPriceLine,
   type ITimeScaleApi,
   type ISeriesApi,
+  type LineData,
   type MouseEventParams,
   type Time,
-  type UTCTimestamp
+  type UTCTimestamp,
+  type WhitespaceData
 } from 'lightweight-charts'
 import { ChevronDown, Link2, Unlink2, X } from 'lucide-react'
 import clsx from 'clsx'
@@ -36,6 +42,16 @@ import {
   timeframeName,
   timeframeSeconds
 } from '@shared/utils/timeframe'
+import {
+  indicatorTitle,
+  overlayLines as calcOverlayLines,
+  subPaneView as calcSubPaneView,
+  type IndicatorInstance,
+  type IndicatorKind,
+  type OverlayId,
+  type Series,
+  type SubPaneId
+} from '@shared/utils/indicators'
 import { DEFAULT_CHART_THEME } from '@shared/types/chart-theme'
 import { useChartThemeStore } from '../../stores/chart-theme-store'
 import { useTimezoneStore } from '../../stores/timezone-store'
@@ -53,6 +69,7 @@ import {
   riskTitle
 } from './position-lines'
 import { PendingTicket, type PendingOrderView } from './pending-ticket'
+import { IndicatorLegend, type IndicatorRow } from './IndicatorLegend'
 
 interface Props {
   /** 1 分钟原始 K 线（本会话全量） */
@@ -81,6 +98,20 @@ interface Props {
    * 关：这个窗口脱钩，主图怎么动都不碰它，它自己也能随便缩放/平移。
    */
   follow: boolean
+  /** 本窗口的主图叠加指标（每个窗口各一份，互不影响） */
+  overlays: IndicatorInstance[]
+  /** 本窗口的副图指标（每个实例独占一块 pane） */
+  subPanes: IndicatorInstance[]
+  /** 改本窗口某个指标实例的参数（图例里点的） */
+  onIndicatorParams?: (kind: IndicatorKind, uid: string, key: string, value: number) => void
+  /** 改本窗口某个指标实例某条线的颜色 */
+  onIndicatorColor?: (kind: IndicatorKind, uid: string, slot: string, color: string) => void
+  /** 本窗口指标参数 + 颜色恢复默认 */
+  onIndicatorReset?: (kind: IndicatorKind, uid: string) => void
+  /** 从本窗口图例里移除某个指标实例 */
+  onIndicatorRemove?: (kind: IndicatorKind, uid: string) => void
+  /** 图例小眼睛：隐藏 / 重新显示本窗口的某个指标 */
+  onIndicatorHidden?: (kind: IndicatorKind, uid: string, hidden: boolean) => void
   /** 抬头上的名字：窗口 2 / 窗口 3 */
   label: string
   /** 已平仓的历史交易：所有窗口都要看得见 */
@@ -149,6 +180,8 @@ const POS_DRAG_START_PX = 3
 /** 待确认单在命中判定里的伪 id */
 const PENDING_ID = '__pending_order__'
 
+type AnySeries = ISeriesApi<'Line'> | ISeriesApi<'Histogram'>
+
 /** 读某个时间轴当前的可视范围；还算不出来时给 null */
 function readRange(ts: TimeScaleLike): Range | null {
   const r = ts.getVisibleRange()
@@ -201,6 +234,13 @@ export function SecondaryChart({
   onSlChange,
   onTpChange,
   riskPnlLabel,
+  overlays,
+  subPanes,
+  onIndicatorParams,
+  onIndicatorColor,
+  onIndicatorReset,
+  onIndicatorRemove,
+  onIndicatorHidden,
   pendingOrder,
   onPendingSlChange,
   onPendingTpChange,
@@ -222,6 +262,13 @@ export function SecondaryChart({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  /**
+   * 建图后放进 state：IndicatorLegend 需要 IChartApi 实例来订阅十字线、量 pane 高度。
+   * 只放 ref 的话建图不会触发重渲染，图例要等下一次别的状态变化才挂得上来。
+   */
+  const [chartApi, setChartApi] = useState<IChartApi | null>(null)
+  /** 指标 series：key = `${uid}:${lineKey}`，十字线读数和移除时都靠它 */
+  const indicatorRefs = useRef<Map<string, AnySeries>>(new Map())
   /** 持仓价格线：每笔一组开仓 / SL / TP，三线都展示在副窗里 */
   const posLinesRef = useRef<
     Map<string, { entry?: IPriceLine; sl?: IPriceLine; tp?: IPriceLine; pending?: IPriceLine }>
@@ -395,6 +442,7 @@ export function SecondaryChart({
 
     chartRef.current = chart
     seriesRef.current = series
+    setChartApi(chart)
 
     if (import.meta.env.DEV) {
       ;(window as any).__rw_chart2 = { chart, series }
@@ -403,9 +451,11 @@ export function SecondaryChart({
     return () => {
       chartRef.current = null
       seriesRef.current = null
-      // 图没了，缓存的价格线引用也失效；下一张图要靠 positions / pending effect 重新建
+      setChartApi(null)
+      // 图没了，缓存的价格线 / 指标引用也失效；下一张图要靠 effects 重新建
       posLinesRef.current.clear()
       pendingLinesRef.current = {}
+      indicatorRefs.current.clear()
       // 调试钩子要一起清掉，否则关掉副窗之后还读得到一个已经 remove 掉的死图表
       if (import.meta.env.DEV) (window as any).__rw_chart2 = null
       chart.remove()
@@ -459,6 +509,273 @@ export function SecondaryChart({
       priceFormat: { type: 'price', precision: digits, minMove: p }
     })
   }, [digits])
+
+  // ---------- 指标计算（和主图同一套：只依赖当前窗口已聚合的 bars） ----------
+  const overlayData = useMemo(() => {
+    const out: { key: string; uid: string; slot: string; color: string; values: Series }[] = []
+    for (const inst of overlays) {
+      // 小眼睛关掉：不画线，也不建 series；参数和颜色都留着
+      if (inst.hidden) continue
+      for (const line of calcOverlayLines(inst.id as OverlayId, bars, inst.params, inst.colors)) {
+        out.push({
+          key: `${inst.uid}:${line.key}`,
+          uid: inst.uid,
+          slot: line.slot,
+          color: line.color,
+          values: line.values
+        })
+      }
+    }
+    return out
+  }, [bars, overlays])
+
+  const subPaneData = useMemo(
+    () =>
+      subPanes
+        .filter((inst) => !inst.hidden)
+        .map((inst) => ({
+          uid: inst.uid,
+          view: calcSubPaneView(
+            inst.id as SubPaneId,
+            bars,
+            inst.params,
+            { upColor: theme.upColor, downColor: theme.downColor },
+            inst.colors
+          )
+        })),
+    [bars, subPanes, theme.upColor, theme.downColor]
+  )
+
+  /**
+   * 结构签名：只有它变了才需要把 series / pane 拆了重建。
+   *
+   * 注意不能把 overlayData / subPaneData 整个放进 effect 依赖 —— 回放每走一格
+   * 指标数值都会重算，那样每根 K 线都会重建一次所有指标 pane。这里只把
+   * 「画几条线、什么颜色、哪些参考线、什么数值轴格式」压进签名。
+   */
+  const indicatorStructure = useMemo(
+    () =>
+      JSON.stringify({
+        o: overlayData.map((l) => ({ k: l.key, c: l.color })),
+        s: subPaneData.map((p) => ({
+          u: p.uid,
+          f: p.view.format,
+          k: p.view.series.map((s) => s.key),
+          t: p.view.series.map((s) => s.type),
+          c: p.view.series.map((s) => s.color),
+          g: p.view.guides
+        }))
+      }),
+    [overlayData, subPaneData]
+  )
+
+  /** 图例 / 十字线读数用的行描述；和主图一样，主图实例 pane=0，副图实例顺次 1..n */
+  const indicatorRows = useMemo<IndicatorRow[]>(() => {
+    const rows: IndicatorRow[] = []
+    for (const inst of overlays) {
+      rows.push({
+        kind: 'overlay',
+        inst,
+        pane: 0,
+        title: translateLabel(locale, indicatorTitle(inst.id, inst.params)),
+        format: 'price',
+        hidden: inst.hidden === true,
+        segs: inst.hidden
+          ? []
+          : overlayData
+              .filter((l) => l.uid === inst.uid)
+              .map((l) => ({ key: l.key, color: l.color }))
+      })
+    }
+    subPaneData.forEach((entry, i) => {
+      const inst = subPanes.find((p) => p.uid === entry.uid)
+      if (!inst) return
+      rows.push({
+        kind: 'sub',
+        inst,
+        pane: i + 1,
+        title: translateLabel(locale, entry.view.title),
+        format: entry.view.format,
+        // hist 没有固定单色（逐根按涨跌上色），读数用中性灰
+        segs: entry.view.series.map((s) => ({
+          key: `${entry.uid}:${s.key}`,
+          color: s.color ?? '#94a3b8'
+        }))
+      })
+    })
+    for (const inst of subPanes) {
+      if (!inst.hidden) continue
+      rows.push({
+        kind: 'sub',
+        inst,
+        pane: 0,
+        title: translateLabel(locale, indicatorTitle(inst.id, inst.params)),
+        format: 'plain',
+        hidden: true,
+        segs: []
+      })
+    }
+    return rows
+  }, [overlays, subPanes, overlayData, subPaneData, locale])
+
+  const getIndicatorSeries = useCallback(
+    (key: string): ISeriesApi<any> | undefined => indicatorRefs.current.get(key),
+    []
+  )
+
+  // ---------- 指标 series：结构变化时整体重建 ----------
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    // 1) 拆掉旧的指标 series
+    for (const [, s] of indicatorRefs.current) {
+      try {
+        chart.removeSeries(s)
+      } catch {
+        // 已随 pane 一起移除
+      }
+    }
+    indicatorRefs.current.clear()
+
+    // 2) 删掉所有副图 pane（从后往前，保留 index 0 的 K 线主图）
+    for (let guard = 0; guard < 16; guard++) {
+      const panes = chart.panes()
+      if (panes.length <= 1) break
+      try {
+        chart.removePane(panes.length - 1)
+      } catch {
+        break
+      }
+    }
+
+    const ensure = (key: string, make: () => AnySeries): AnySeries => {
+      const created = make()
+      indicatorRefs.current.set(key, created)
+      return created
+    }
+
+    // 3) 主图叠加（pane 0）
+    for (const line of overlayData) {
+      ensure(line.key, () =>
+        chart.addSeries(
+          LineSeries,
+          {
+            color: line.color,
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false
+          },
+          0
+        )
+      )
+    }
+
+    // 4) 副图：每个实例独占一块 pane
+    subPaneData.forEach((entry, i) => {
+      const paneIndex = i + 1
+      const isVolume = entry.view.format === 'volume'
+      for (const ser of entry.view.series) {
+        const key = `${entry.uid}:${ser.key}`
+        if (ser.type === 'hist') {
+          ensure(key, () =>
+            chart.addSeries(
+              HistogramSeries,
+              {
+                priceLineVisible: false,
+                lastValueVisible: false,
+                ...(isVolume ? { priceFormat: { type: 'volume' as const } } : {})
+              },
+              paneIndex
+            )
+          )
+        } else {
+          ensure(key, () =>
+            chart.addSeries(
+              LineSeries,
+              {
+                color: ser.color,
+                lineWidth: ser.lineWidth ?? 1,
+                priceLineVisible: false,
+                lastValueVisible: false
+              },
+              paneIndex
+            )
+          )
+        }
+      }
+
+      // 参考线（RSI 70/30、CCI ±100…）挂在副图第一根 series 上
+      const first = entry.view.series[0]
+      const holder = first ? indicatorRefs.current.get(`${entry.uid}:${first.key}`) : null
+      if (holder && entry.view.guides.length > 0) {
+        for (const g of entry.view.guides) {
+          try {
+            holder.createPriceLine({
+              price: g.value,
+              color: g.color ?? 'rgba(255,255,255,0.16)',
+              lineWidth: 1,
+              lineStyle: LineStyle.Dashed,
+              axisLabelVisible: false,
+              title: ''
+            })
+          } catch {
+            // 参考线画不上不致命
+          }
+        }
+      }
+    })
+
+    // 5) 高度分配：K 线主图吃掉剩余，副图总量随个数变多但不超过 66%
+    const panes = chart.panes()
+    const subCount = Math.max(0, panes.length - 1)
+    if (subCount > 0) {
+      const subTotal = Math.min(0.34 + 0.14 * (subCount - 1), 0.66)
+      panes[0].setStretchFactor(1)
+      for (let i = 1; i < panes.length; i++) panes[i].setStretchFactor(subTotal / subCount)
+    }
+  }, [indicatorStructure])
+
+  // ---------- 指标 series：只灌数据（回放每推进一格走这里，不重建） ----------
+  useEffect(() => {
+    const toLineData = (values: Series): (LineData | WhitespaceData)[] => {
+      const out: (LineData | WhitespaceData)[] = []
+      for (let i = 0; i < bars.length; i++) {
+        const v = values[i]
+        out.push(v == null ? { time: bars[i].time as UTCTimestamp } : { time: bars[i].time as UTCTimestamp, value: v })
+      }
+      return out
+    }
+
+    for (const line of overlayData) {
+      const s = indicatorRefs.current.get(line.key) as ISeriesApi<'Line'> | undefined
+      if (s) s.setData(toLineData(line.values))
+    }
+
+    for (const entry of subPaneData) {
+      for (const ser of entry.view.series) {
+        const api = indicatorRefs.current.get(`${entry.uid}:${ser.key}`)
+        if (!api) continue
+        if (ser.type === 'hist') {
+          const data: HistogramData[] = []
+          for (let i = 0; i < bars.length; i++) {
+            const v = ser.values[i]
+            if (v == null) continue
+            const color = ser.colors?.[i]
+            data.push(
+              color
+                ? { time: bars[i].time as UTCTimestamp, value: v, color }
+                : { time: bars[i].time as UTCTimestamp, value: v }
+            )
+          }
+          ;(api as ISeriesApi<'Histogram'>).setData(data)
+        } else {
+          ;(api as ISeriesApi<'Line'>).setData(toLineData(ser.values))
+        }
+      }
+    }
+  }, [bars, overlayData, subPaneData, indicatorStructure])
 
   // ---------- 历史成交连线 ----------
 
@@ -928,7 +1245,14 @@ export function SecondaryChart({
 
     const hitLine = (y: number): { id: string; key: 'sl' | 'tp' | 'risk' } | null => {
       const series = seriesRef.current
+      const chart = chartRef.current
       if (!series) return null
+      /**
+       * 指标副图是本窗里新加的 pane；持仓价格线只画在 pane 0（K 线主图）。
+       * 点在下面的指标 pane 里不能被判成抓住了价格线，否则拖 MACD/RSI 会改掉止损。
+       */
+      const pane0Height = chart?.panes()[0]?.getHeight()
+      if (pane0Height != null && y >= pane0Height) return null
       // 用对象包一层：闭包里给裸变量赋值，TS 的控制流收窄会把它当成永远是 null
       const hit: { best: { id: string; key: 'sl' | 'tp' | 'risk'; dist: number } | null } = {
         best: null
@@ -1474,6 +1798,19 @@ export function SecondaryChart({
           ref={canvasRef}
           data-secondary-overlay="1"
           className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+        />
+        {/* 指标图例：跟主图同一套 chip / 参数面板；这里没有画图工具条，贴着顶部放 */}
+        <IndicatorLegend
+          rows={indicatorRows}
+          chart={chartApi}
+          getSeries={getIndicatorSeries}
+          digits={digits}
+          overlayTop={4}
+          onParams={onIndicatorParams}
+          onColor={onIndicatorColor}
+          onReset={onIndicatorReset}
+          onRemove={onIndicatorRemove}
+          onHidden={onIndicatorHidden}
         />
         {pendingOrder && (
           <PendingTicket

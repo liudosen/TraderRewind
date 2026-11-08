@@ -46,7 +46,9 @@ export const zh = {
   'training.addOverlay': '添加一个「{name}」',
   'training.subPaneLimit': '副图最多同时显示 {n} 个',
   'training.addSubPane': '添加一个「{name}」副图',
-  'training.indicatorMenuNote': '同一个指标可以加多次。加完后在 K 线左上角点指标名改参数。',
+  'training.indicatorTarget': '指标加到',
+  'training.indicatorMenuNote':
+    '同一个指标可以加多次。指标只加到当前选中的窗口；加完后在对应 K 线左上角点指标名改参数。',
   'training.playHotkey': '播放（回车）',
   'training.pauseHotkey': '暂停（回车）',
   'training.scrollLatest': '归位到最新 K 线（空格）',
@@ -292,8 +294,9 @@ export const en: Record<keyof typeof zh, string> = {
   'training.addOverlay': 'Add {name}',
   'training.subPaneLimit': 'Up to {n} sub-panes at once',
   'training.addSubPane': 'Add a {name} sub-pane',
+  'training.indicatorTarget': 'Add to',
   'training.indicatorMenuNote':
-    'The same indicator can be added more than once. Click its name in the top-left of the chart to change its parameters.',
+    'Indicators are added only to the selected window. The same indicator can be added more than once; click its name in the top-left of that chart to change its parameters.',
   'training.playHotkey': 'Play (Enter)',
   'training.pauseHotkey': 'Pause (Enter)',
   'training.scrollLatest': 'Back to latest candle (Space)',

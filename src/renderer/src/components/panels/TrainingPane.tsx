@@ -65,7 +65,20 @@ import {
   timeframeName,
   timeframeSeconds
 } from '@shared/utils/timeframe'
-import { OVERLAYS, SUB_PANES, MAX_SUB_PANES } from '@shared/utils/indicators'
+import {
+  OVERLAYS,
+  SUB_PANES,
+  MAX_SUB_PANES,
+  makeInstance,
+  resolveParams,
+  type IndicatorId,
+  type IndicatorInstance,
+  type IndicatorKind
+} from '@shared/utils/indicators'
+import {
+  normalizeIndicatorList,
+  type IndicatorSet
+} from '@shared/types/indicator-prefs'
 import { DRAWING_TOOLS, type DrawingType } from '@shared/types/drawing'
 import { formatNumber, formatPrice, formatSigned } from '../../utils/format'
 import { ExecutionCostCard } from '../common/ExecutionCostCard'
@@ -145,7 +158,7 @@ const MIN_SUB_SPLIT = 18
 const MAX_SUB_SPLIT = 82
 
 /** 一个副周期窗的持久化状态 */
-interface SubChartState {
+interface SubChartState extends IndicatorSet {
   id: string
   /** 这个窗口显示的周期 */
   tf: string
@@ -186,7 +199,13 @@ function loadSubCharts(): SubChartState[] {
       const parsed: unknown = JSON.parse(raw)
       if (Array.isArray(parsed)) {
         return parsed.slice(0, MAX_SUB_CHARTS).map((item, i): SubChartState => {
-          const o = (item ?? {}) as { id?: unknown; tf?: unknown; follow?: unknown }
+          const o = (item ?? {}) as {
+            id?: unknown
+            tf?: unknown
+            follow?: unknown
+            overlays?: unknown
+            subPanes?: unknown
+          }
           const tf =
             typeof o.tf === 'string' && BASE_TIMEFRAMES.some((x) => x.id === o.tf)
               ? o.tf
@@ -194,7 +213,10 @@ function loadSubCharts(): SubChartState[] {
           return {
             id: typeof o.id === 'string' && o.id ? o.id : `sub-${i + 1}`,
             tf,
-            follow: o.follow !== false
+            follow: o.follow !== false,
+            // 老版本没有这个字段：读成空数组，不要凭空把主图那套指标复制过来
+            overlays: normalizeIndicatorList(o.overlays, 'overlay'),
+            subPanes: normalizeIndicatorList(o.subPanes, 'sub')
           }
         })
       }
@@ -211,7 +233,9 @@ function loadSubCharts(): SubChartState[] {
           saved && BASE_TIMEFRAMES.some((o) => o.id === saved)
             ? saved
             : pickSubTimeframe(mainTf, new Set([mainTf])),
-        follow: true
+        follow: true,
+        overlays: [],
+        subPanes: []
       }
     ]
   }
@@ -1038,7 +1062,10 @@ export function TrainingPane(): React.JSX.Element {
         {
           id: `sub-${Date.now().toString(36)}-${prev.length}`,
           tf: pickSubTimeframe(timeframe, used),
-          follow: true
+          follow: true,
+          // 每个窗口的指标独立：新窗从空开始，用户在哪个窗口加就加到哪个窗口
+          overlays: [],
+          subPanes: []
         }
       ]
     })
@@ -1078,6 +1105,126 @@ export function TrainingPane(): React.JSX.Element {
   const activeSub = subCharts.find((s) => s.id === activePane) ?? null
 
   /**
+   * 当前选中窗口的指标清单。
+   *
+   * 主图那份一直存在 store 里（跨回测集沿用用户偏好）；每个副窗各带一份，
+   * 跟着窗口布局一起落在 localStorage。菜单上的计数、上限、以及新加指标的去向
+   * 全部以这里为准 —— 选中的是哪个窗口，就操作哪个窗口的指标。
+   */
+  const activeOverlays = activeSub?.overlays ?? overlays
+  const activeSubPanes = activeSub?.subPanes ?? subPanes
+  const activePaneName = activeSub
+    ? t('chart.subPaneLabel', { n: subCharts.findIndex((s) => s.id === activeSub.id) + 2 })
+    : t('chart.mainPane')
+
+  /** 改某个副窗的指标配置；主图不走这里，仍由 store 统一存用户偏好 */
+  const updateSubIndicators = useCallback(
+    (paneId: string, updater: (current: IndicatorSet) => IndicatorSet): void => {
+      setSubCharts((prev) =>
+        prev.map((s) =>
+          s.id === paneId
+            ? {
+                ...s,
+                ...updater({ overlays: s.overlays, subPanes: s.subPanes })
+              }
+            : s
+        )
+      )
+    },
+    []
+  )
+
+  /** 添加指标：选中的是副窗就只加到那个副窗 */
+  const addIndicatorToActive = useCallback(
+    (kind: IndicatorKind, id: IndicatorId): boolean => {
+      if (!activeSub) return addIndicator(kind, id)
+      const list = kind === 'overlay' ? activeSub.overlays : activeSub.subPanes
+      if (kind === 'sub' && list.length >= MAX_SUB_PANES) return false
+      const inst = makeInstance(id)
+      updateSubIndicators(activeSub.id, (cur) =>
+        kind === 'overlay'
+          ? { ...cur, overlays: [...cur.overlays, inst] }
+          : { ...cur, subPanes: [...cur.subPanes, inst] }
+      )
+      return true
+    },
+    [activeSub, addIndicator, updateSubIndicators]
+  )
+
+  const removeSubIndicator = useCallback(
+    (paneId: string, kind: IndicatorKind, uid: string): void => {
+      updateSubIndicators(paneId, (cur) => ({
+        ...cur,
+        overlays:
+          kind === 'overlay' ? cur.overlays.filter((x) => x.uid !== uid) : cur.overlays,
+        subPanes: kind === 'sub' ? cur.subPanes.filter((x) => x.uid !== uid) : cur.subPanes
+      }))
+    },
+    [updateSubIndicators]
+  )
+
+  const patchSubIndicator = useCallback(
+    (
+      paneId: string,
+      kind: IndicatorKind,
+      uid: string,
+      patch: (inst: IndicatorInstance) => IndicatorInstance
+    ): void => {
+      updateSubIndicators(paneId, (cur) => ({
+        ...cur,
+        overlays:
+          kind === 'overlay' ? cur.overlays.map((x) => (x.uid === uid ? patch(x) : x)) : cur.overlays,
+        subPanes: kind === 'sub' ? cur.subPanes.map((x) => (x.uid === uid ? patch(x) : x)) : cur.subPanes
+      }))
+    },
+    [updateSubIndicators]
+  )
+
+  const setSubIndicatorParams = useCallback(
+    (paneId: string, kind: IndicatorKind, uid: string, key: string, value: number): void => {
+      patchSubIndicator(paneId, kind, uid, (inst) => ({
+        ...inst,
+        params: { ...inst.params, [key]: value }
+      }))
+    },
+    [patchSubIndicator]
+  )
+
+  const setSubIndicatorColor = useCallback(
+    (paneId: string, kind: IndicatorKind, uid: string, slot: string, color: string): void => {
+      patchSubIndicator(paneId, kind, uid, (inst) => ({
+        ...inst,
+        colors: { ...(inst.colors ?? {}), [slot]: color }
+      }))
+    },
+    [patchSubIndicator]
+  )
+
+  const resetSubIndicator = useCallback(
+    (paneId: string, kind: IndicatorKind, uid: string): void => {
+      // 和主图一致：参数和颜色一起回默认
+      patchSubIndicator(paneId, kind, uid, (inst) => ({
+        ...inst,
+        params: resolveParams(inst.id),
+        colors: undefined
+      }))
+    },
+    [patchSubIndicator]
+  )
+
+  const hideSubIndicator = useCallback(
+    (paneId: string, kind: IndicatorKind, uid: string, hidden: boolean): void => {
+      patchSubIndicator(paneId, kind, uid, (inst) => {
+        if (hidden) return { ...inst, hidden: true }
+        const next = { ...inst }
+        delete next.hidden
+        return next
+      })
+    },
+    [patchSubIndicator]
+  )
+
+  /**
    * 「下一根」一步走多长 —— 跟着**选中的那个窗口**的周期走。
    *
    * 主图 M30、副窗 M1 时，选中副窗按一下（或播放一格）就只走 1 分钟，
@@ -1092,17 +1239,32 @@ export function TrainingPane(): React.JSX.Element {
    */
   const atReplayEnd = cursor >= bars.length - 1 && !partialBar
 
+  /**
+   * 推进回放：步长跟着选中的窗口走。
+   *
+   * 但选中主图时必须退回 `advance()` 的「整根」口径，不能传主图周期秒数。
+   * 原因：`cursorTime` 可能停在某一根内部（比如刚在 M1 副窗里走了几分钟），
+   * 从 00:18 直接 +300 会落到 00:23 —— 新的 M5 只聚合出 4 根 1 分钟 K 线，
+   * 看起来就像「播放少了 / 最后一根没收全」。`advance()` 会走到下一根主图 K 线的
+   * 桶末尾，保证新出现的这根是完整的 5 根（M30 就是完整 30 根）。
+   * 选中副窗时仍然按副窗周期走，主图出现未完成的粗周期 K 线是预期行为。
+   */
+  const advanceSelected = useCallback((): void => {
+    if (activeSub) advance(advanceStep)
+    else advance()
+  }, [activeSub, advance, advanceStep])
+
   useEffect(() => {
     void loadDatasets()
     void loadSessions()
   }, [loadDatasets, loadSessions])
 
-  // 回放定时器：每一格走「选中窗口」的一根 K 线（advanceStep 为 0 时退回主图周期）
+  // 回放定时器：每一格走「选中窗口」的一根 K 线；选中主图时走完整的主图 K 线
   useEffect(() => {
     if (!playing) return
-    const interval = window.setInterval(() => advance(advanceStep), 1000 / barsPerSec)
+    const interval = window.setInterval(() => advanceSelected(), 1000 / barsPerSec)
     return () => window.clearInterval(interval)
-  }, [playing, barsPerSec, advance, advanceStep])
+  }, [playing, barsPerSec, advanceSelected])
 
   useEffect(() => {
     return () => {
@@ -1635,9 +1797,9 @@ export function TrainingPane(): React.JSX.Element {
     (e) => {
       e.preventDefault()
       if (orderSide || orderDraft) return
-      if (activeSession) advance(advanceStep)
+      if (activeSession) advanceSelected()
     },
-    [activeSession, advance, advanceStep, orderSide, orderDraft]
+    [activeSession, advanceSelected, orderSide, orderDraft]
   )
   // T = 跳到下一个交易时段。只在「当前不在时段内」时生效；
   // 没设交易时段的会话按了不生效（只弹一句为什么）。
@@ -2283,6 +2445,14 @@ export function TrainingPane(): React.JSX.Element {
 
               {indicatorMenu && (
                 <div className="absolute left-0 top-full z-30 mt-1 w-[206px] rounded-md border border-[var(--border-strong)] bg-[var(--surface-1)] p-2 shadow-xl">
+                  {/* 指标加到哪个窗口：主图 / 窗口2 / 窗口3，一眼可见 */}
+                  <div className="mb-2 flex items-center gap-1 border-b border-[var(--border-subtle)] pb-1.5 text-[9px] uppercase tracking-wider text-[var(--text-faint)]">
+                    {t('training.indicatorTarget')}
+                    <span className="ml-auto rounded bg-[var(--c-accent-tint)] px-1.5 py-0.5 font-mono text-[9.5px] normal-case tracking-normal text-[var(--c-accent)]">
+                      {activePaneName}
+                    </span>
+                  </div>
+
                   <div className="mb-1 flex items-center gap-1 text-[9px] uppercase tracking-wider text-[var(--text-faint)]">
                     {t('settings.indicator.overlay')}
                     <span className="ml-auto normal-case tracking-normal text-[9px] opacity-70">
@@ -2290,12 +2460,12 @@ export function TrainingPane(): React.JSX.Element {
                     </span>
                   </div>
                   {OVERLAYS.map((o) => {
-                    const count = overlays.filter((x) => x.id === o.id).length
+                    const count = activeOverlays.filter((x) => x.id === o.id).length
                     return (
                       <button
                         key={o.id}
                         type="button"
-                        onClick={() => addIndicator('overlay', o.id)}
+                        onClick={() => addIndicatorToActive('overlay', o.id)}
                         title={t('training.addOverlay', { name: translateLabel(locale, o.label) })}
                         className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[11px] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
                       >
@@ -2314,17 +2484,17 @@ export function TrainingPane(): React.JSX.Element {
                   <div className="mb-1 mt-2 flex items-center gap-1 text-[9px] uppercase tracking-wider text-[var(--text-faint)]">
                     {t('settings.indicator.subPane')}
                     <span className="ml-auto font-mono normal-case tracking-normal text-[9px] opacity-70">
-                      {subPanes.length}/{MAX_SUB_PANES}
+                      {activeSubPanes.length}/{MAX_SUB_PANES}
                     </span>
                   </div>
                   {SUB_PANES.map((sp) => {
-                    const count = subPanes.filter((x) => x.id === sp.id).length
-                    const full = subPanes.length >= MAX_SUB_PANES
+                    const count = activeSubPanes.filter((x) => x.id === sp.id).length
+                    const full = activeSubPanes.length >= MAX_SUB_PANES
                     return (
                       <button
                         key={sp.id}
                         type="button"
-                        onClick={() => addIndicator('sub', sp.id)}
+                        onClick={() => addIndicatorToActive('sub', sp.id)}
                         disabled={full}
                         title={
                           full
@@ -2397,7 +2567,7 @@ export function TrainingPane(): React.JSX.Element {
               <IconButton
                 // 步长跟着选中的窗口走：在 M1 副窗上就是「下一分钟」，在主图上就是主图周期
                 title={`${t('training.nextBar')} · ${timeframeCode(stepTf)}`}
-                onClick={() => advance(advanceStep)}
+                onClick={advanceSelected}
                 disabled={atReplayEnd}
               >
                 <SkipForward size={14} />
@@ -2796,6 +2966,22 @@ export function TrainingPane(): React.JSX.Element {
                             playing={playing && activePane === sub.id}
                             // 跟随主图时间范围（每个窗口单独设）
                             follow={sub.follow}
+                            // 指标也按窗口分开：在哪个窗口加的，只画在哪个窗口
+                            overlays={sub.overlays}
+                            subPanes={sub.subPanes}
+                            onIndicatorParams={(kind, uid, key, value) =>
+                              setSubIndicatorParams(sub.id, kind, uid, key, value)
+                            }
+                            onIndicatorColor={(kind, uid, slot, color) =>
+                              setSubIndicatorColor(sub.id, kind, uid, slot, color)
+                            }
+                            onIndicatorReset={(kind, uid) => resetSubIndicator(sub.id, kind, uid)}
+                            onIndicatorRemove={(kind, uid) =>
+                              removeSubIndicator(sub.id, kind, uid)
+                            }
+                            onIndicatorHidden={(kind, uid, hidden) =>
+                              hideSubIndicator(sub.id, kind, uid, hidden)
+                            }
                             label={t('chart.subPaneLabel', { n: i + 2 })}
                             // 订单历史线每个窗口都画；但只有选中的那个窗口负责「跳过去」
                             trades={closedTrades}

@@ -47,6 +47,11 @@ interface Props {
   onRemove?: (kind: IndicatorKind, uid: string) => void
   /** 小眼睛：隐藏 / 重新显示 */
   onHidden?: (kind: IndicatorKind, uid: string, hidden: boolean) => void
+  /**
+   * 主图叠加那排 chip 距图表容器顶部的像素。
+   * 主图下面有画图工具条，默认 44；副周期窗没有工具条，可以贴着顶部放。
+   */
+  overlayTop?: number
 }
 
 /** 读数格式化：成交量类用 K/M 缩写，价格按品种精度，其余两位小数 */
@@ -84,7 +89,8 @@ export function IndicatorLegend({
   onColor,
   onReset,
   onRemove,
-  onHidden
+  onHidden,
+  overlayTop = 44
 }: Props): React.JSX.Element | null {
   const [open, setOpen] = useState<{ kind: IndicatorKind; uid: string } | null>(null)
   /** 十字线所在时刻各条线的值；null = 鼠标不在图上 */
@@ -228,9 +234,9 @@ export function IndicatorLegend({
         <div
           // 给图表那边量高度用：拖动提示条要排在它下面，否则两行会叠在同一个位置
           data-legend-overlays="1"
-          className="pointer-events-auto absolute left-2 top-11 max-w-[calc(100%-96px)]"
+          className="pointer-events-auto absolute left-2 max-w-[calc(100%-96px)]"
           // 面板比一排 chip 高得多，会伸到副图那一带；不抬高层级就会被后来的副图行盖住
-          style={{ zIndex: current && current.pane === 0 ? 40 : undefined }}
+          style={{ top: overlayTop, zIndex: current && current.pane === 0 ? 40 : undefined }}
         >
           <div className="group relative flex flex-wrap items-center gap-x-1 gap-y-0.5 rounded-md border border-[var(--border-subtle)]/70 bg-[var(--surface-0)]/80 px-1.5 py-1 backdrop-blur-[2px]">
             {overlayRows.map((row) => (
@@ -254,7 +260,7 @@ export function IndicatorLegend({
                 }}
               />
             ))}
-            {current && current.pane === 0 && panel(current, 'below', 44)}
+            {current && current.pane === 0 && panel(current, 'below', overlayTop)}
           </div>
         </div>
       )}
