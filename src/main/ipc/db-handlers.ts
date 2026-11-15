@@ -11,6 +11,7 @@ import { loadSettings } from '../settings'
 import { fmtTzDateTime, normalizeTimezone } from '@shared/types/timezone'
 import { serializeTradeWindow } from '@shared/types/trade-window'
 import { normalizeTags } from '@shared/types/trade-tags'
+import { isChartTimeframe } from '@shared/utils/timeframe'
 
 export function registerDbHandlers(): void {
   /** 行情库 */
@@ -341,7 +342,7 @@ export function registerDbHandlers(): void {
   ipcMain.handle(IPC.DB_LIST_TRADE_SCREENSHOTS, (_e, sessionId: number, tradeId: string) => {
     return t()
       .prepare(
-        `SELECT id, width, height, byte_size AS byteSize, created_at AS createdAt
+        `SELECT id, width, height, byte_size AS byteSize, timeframe, created_at AS createdAt
            FROM trade_screenshots
           WHERE session_id = ? AND trade_id = ?
           ORDER BY created_at ASC`
@@ -361,7 +362,15 @@ export function registerDbHandlers(): void {
     IPC.DB_ADD_TRADE_SCREENSHOT,
     (
       _e,
-      input: { sessionId: number; tradeId: string; dataUrl: string; width: number; height: number }
+      input: {
+        sessionId: number
+        tradeId: string
+        dataUrl: string
+        width: number
+        height: number
+        /** 截图对应的周期；老客户端 / 老数据可以不传 */
+        timeframe?: string
+      }
     ) => {
       const sessionId = Number(input?.sessionId)
       const tradeId = String(input?.tradeId ?? '')
@@ -391,12 +400,19 @@ export function registerDbHandlers(): void {
       const id = `shot_${randomUUID()}`
       const width = Number.isFinite(Number(input?.width)) ? Math.round(Number(input.width)) : null
       const height = Number.isFinite(Number(input?.height)) ? Math.round(Number(input.height)) : null
+      const timeframe =
+        typeof input?.timeframe === 'string' && isChartTimeframe(input.timeframe)
+          ? input.timeframe
+          : null
       const createdAt = Date.now()
       db.prepare(
-        `INSERT INTO trade_screenshots (id, session_id, trade_id, mime, bytes, byte_size, width, height, created_at)
-         VALUES (?, ?, ?, 'image/png', ?, ?, ?, ?, ?)`
-      ).run(id, sessionId, tradeId, bytes, bytes.length, width, height, createdAt)
-      return { ok: true as const, shot: { id, width, height, byteSize: bytes.length, createdAt } }
+        `INSERT INTO trade_screenshots (id, session_id, trade_id, mime, bytes, byte_size, width, height, timeframe, created_at)
+         VALUES (?, ?, ?, 'image/png', ?, ?, ?, ?, ?, ?)`
+      ).run(id, sessionId, tradeId, bytes, bytes.length, width, height, timeframe, createdAt)
+      return {
+        ok: true as const,
+        shot: { id, width, height, byteSize: bytes.length, timeframe, createdAt }
+      }
     }
   )
 

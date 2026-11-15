@@ -29,6 +29,8 @@ interface TradeShotMeta {
   height: number | null
   byteSize: number
   createdAt: number
+  /** 截图对应的周期；老数据为 null */
+  timeframe?: string | null
   dataUrl?: string
 }
 
@@ -141,7 +143,8 @@ export function TradeMetaDialog({
         tradeId: trade.id,
         dataUrl: shot.dataUrl,
         width: shot.width,
-        height: shot.height
+        height: shot.height,
+        timeframe: shot.timeframe
       })
       if (!res?.ok) return false
       const meta = res.shot as Omit<TradeShotMeta, 'dataUrl'>

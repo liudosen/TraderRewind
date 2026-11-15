@@ -43,6 +43,8 @@ export interface TradeShotPayload {
   dataUrl: string
   width: number
   height: number
+  /** 这张图对应的周期（列进 Excel 时用作表头） */
+  timeframe: string
 }
 
 interface Props {
@@ -379,7 +381,7 @@ export function TradeSnapshotDialog({
         cssWidth: host?.clientWidth || shot.width
       })
       if (!image.dataUrl) throw new Error('no-canvas')
-      const ok = await onCapture(image)
+      const ok = await onCapture({ ...image, timeframe: tf })
       if (!ok) setSaveError(t('tradeShot.failed'))
     } catch {
       setSaveError(t('tradeShot.failed'))

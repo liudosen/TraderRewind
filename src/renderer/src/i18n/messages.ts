@@ -253,6 +253,7 @@ const baseZh = {
   'journal.export.col.tp': '止盈（平仓时）',
   'journal.export.col.commission': '手续费',
   'journal.export.col.r': 'R',
+  'journal.export.shot': '截图',
 
   // ── 数据源 ─────────────────────────────────────────
   'ds.source': '数据源',
@@ -663,6 +664,7 @@ const baseEn: Record<keyof typeof baseZh, string> = {
   'journal.export.col.tp': 'Target (at close)',
   'journal.export.col.commission': 'Commission',
   'journal.export.col.r': 'R',
+  'journal.export.shot': 'Snapshot',
 
   'ds.source': 'Data source',
   'ds.loading': 'Loading…',

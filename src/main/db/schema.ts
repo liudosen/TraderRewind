@@ -536,6 +536,8 @@ const TRADE_SCREENSHOTS_DDL = `
     byte_size INTEGER NOT NULL,
     width INTEGER,
     height INTEGER,
+    -- 截图对应的图表周期（M5 / C7 …）；老版本没有这一列时为 NULL
+    timeframe TEXT,
     created_at INTEGER NOT NULL
   )
 `
@@ -635,6 +637,8 @@ export function runTrainingMigrations(db: Database.Database): void {
   ensureColumn(db, 'sessions', 'trade_window', 'TEXT')
   // 截图表：幂等建表，不占迁移版本号（见 TRADE_SCREENSHOTS_DDL 的说明）
   db.exec(TRADE_SCREENSHOTS_DDL)
+  // 老库已有 trade_screenshots，但没有「周期」列；补上后新截图才能按 M5/M15 分列
+  ensureColumn(db, 'trade_screenshots', 'timeframe', 'TEXT')
   db.exec(TRAINING_INDEXES)
   assertSchema(db, TRAINING_REQUIRED, '训练库')
   if (n > 0) console.log(`[DB] 训练库迁移完成，新增 ${n} 项`)

@@ -269,7 +269,7 @@ async function captureOne(
       cssWidth: TRADE_SHOT_CSS_WIDTH
     })
     if (!image.dataUrl) return
-    await saveShot(opts.sessionId, trade.id, image)
+    await saveShot(opts.sessionId, trade.id, tf, image)
   } finally {
     try {
       markers.detach()
@@ -288,6 +288,7 @@ async function captureOne(
 async function saveShot(
   sessionId: number,
   tradeId: string,
+  timeframe: string,
   image: { dataUrl: string; width: number; height: number }
 ): Promise<void> {
   for (let attempt = 0; attempt < 15; attempt++) {
@@ -296,7 +297,8 @@ async function saveShot(
       tradeId,
       dataUrl: image.dataUrl,
       width: image.width,
-      height: image.height
+      height: image.height,
+      timeframe
     })
     if (res?.ok) return
     if (res?.error !== 'no-trade') return

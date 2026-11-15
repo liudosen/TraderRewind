@@ -315,6 +315,14 @@ lots, entry/exit, stop/target at close, close reason, tags, P&L, commission, R a
 The first row is frozen and filterable, and the export always contains the whole ledger —
 tag filters on screen do not apply.
 
+If a trade has snapshots, extra columns are appended to the right by **timeframe** (M5, M15,
+H1, custom M7…), one image per column; when a timeframe has several snapshots they become
+`M5` / `M5 (2)`. The images are stored as **in-cell pictures** (Excel's "Place in Cell"
+format): in WPS, **double-click a snapshot cell** to open the native large preview and close
+it with the × or Esc. No sheet jump and no external image files. Excel 365 displays these
+cell images; older Excel versions may show `#VALUE!` because they lack Place in Cell support.
+Legacy snapshots without a recorded timeframe go into the final "—" column.
+
 **The full setup is archived**
 
 Every session stores the dataset used, replay range, initial balance, default lot size, risk per

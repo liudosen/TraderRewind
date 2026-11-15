@@ -48,6 +48,8 @@ const api = {
     dataUrl: string
     width: number
     height: number
+    /** 截图对应的周期（M5 / C7 …） */
+    timeframe?: string
   }) => ipcRenderer.invoke(IPC.DB_ADD_TRADE_SCREENSHOT, input),
   deleteTradeScreenshot: (id: string) =>
     ipcRenderer.invoke(IPC.DB_DELETE_TRADE_SCREENSHOT, id),
@@ -84,11 +86,14 @@ const api = {
   openCsvFile: () => ipcRenderer.invoke(IPC.FILE_OPEN_CSV),
   readCsvFile: (path: string) => ipcRenderer.invoke(IPC.FILE_READ_CSV, path),
   saveCsvFile: (name: string, content: string) => ipcRenderer.invoke(IPC.FILE_SAVE_CSV, name, content),
-  /** 把二维表写成真正的 .xlsx（日志页「导出 Excel」用） */
+  /** 把二维表写成真正的 .xlsx（日志页「导出 Excel」用）；带交易 id 时自动追加截图列 */
   exportXlsx: (payload: {
     fileName: string
     sheetName: string
     rows: (string | number | null)[][]
+    columnWidths?: number[]
+    sessionId?: number
+    tradeIds?: string[]
   }) => ipcRenderer.invoke(IPC.FILE_EXPORT_XLSX, payload),
 
   // ----- 数据源与下载 -----

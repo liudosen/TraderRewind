@@ -355,7 +355,9 @@ export function JournalPane(): React.JSX.Element {
         fileName: t('journal.export.fileName', { name: rawName || 'traderrewind' }),
         sheetName: t('journal.export.sheet'),
         rows,
-        columnWidths: [6, 20, 20, 8, 8, 12, 12, 14, 14, 12, 22, 14, 12, 8, 52]
+        columnWidths: [6, 20, 20, 8, 8, 12, 12, 14, 14, 12, 22, 14, 12, 8, 52],
+        sessionId: selected.id,
+        tradeIds: trades.map((tr) => tr.id)
       })
       if (res?.canceled) return
       if (res?.path) {
