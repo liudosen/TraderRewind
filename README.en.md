@@ -27,6 +27,7 @@ Runs entirely offline. No account, no connection to any broker. All data stays o
   - [6. Data sources and downloads](#6-data-sources-and-downloads)
   - [7. Data storage](#7-data-storage)
   - [8. Settings](#8-settings)
+  - [9. MCP: read-only review for AI](#9-mcp-read-only-review-for-ai)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Tech stack](#tech-stack)
 - [Project layout](#project-layout)
@@ -215,9 +216,11 @@ Notes and tags are written into the trade record, so later you can see *why* you
 
 **Draggable stop-loss and take-profit**
 
-The pending line is draggable from the moment it appears: drag down for a stop, up for a take
-profit — the amount on the ticket recalculates live, so you see your worst case *before* you
-commit.
+The pending line is draggable from the moment it appears, and the order is fixed:
+**stop-loss first, then take-profit**. Drag the stop out, release, then drag again for the take
+profit (reversed for shorts). Until a stop exists, dragging toward the take-profit side does
+nothing — a twitch of the mouse can no longer leave a tiny take-profit right beside entry.
+The amount on the ticket recalculates live, so you see your worst case *before* you commit.
 
 After the fill it is the same entry line:
 
@@ -288,6 +291,29 @@ single most-used action in review, because that's where you see what actually we
 Above the table, a tag filter lets you isolate a subset (say, only trades tagged "strong trend").
 Multi-select is AND-ed: a trade must carry every selected tag to show up, so
 "right-mid-right" + "sub-strong trend" narrows down to the trades that are both.
+
+**Trade snapshots**
+
+Open a trade's pencil editor and click "Add snapshot" under **Snapshots**: a standalone chart
+opens, positioned on the trade's entry/exit, with entry and exit price lines, markers and a
+connector between the fills. Switch timeframe or drag/zoom as needed, then hit "Capture & add"
+to store the image on the trade — the capture carries a header with symbol, side, size, times,
+prices and P&L. A trade can hold several snapshots; click a thumbnail to view it large or delete
+it. Images live in the training database (BLOB), so restoring the database on another machine
+keeps them intact.
+
+**Auto snapshots after a trade closes**: in Settings → Trading → Auto snapshots, pick up to 5
+timeframes — you can also type a custom period in minutes (1–10080, shared with the chart's
+custom timeframe list). Every time a trade is **fully closed**, one chart is captured per
+timeframe and attached to that trade automatically; partial closes do not trigger it.
+
+**Export to Excel**
+
+With a session selected in the Journal, click "Export Excel" in the header. It writes every
+closed trade of that session to a real `.xlsx`: open/close times in the session timezone, side,
+lots, entry/exit, stop/target at close, close reason, tags, P&L, commission, R and notes.
+The first row is frozen and filterable, and the export always contains the whole ledger —
+tag filters on screen do not apply.
 
 **The full setup is archived**
 
@@ -445,6 +471,26 @@ touch your market database.
 **Timezone**
 
 - Display timezone for the chart axis, trade records and reports (UTC+0 through UTC-8 and more)
+
+### 9. MCP: read-only review for AI
+
+The app now ships a local MCP server, so an external AI client can read the
+training and market databases directly — no CSV export and no SQL required.
+
+- **Read-only**: sessions, trades, M1/M5/M30 context per trade, grouped stats.
+  There is no place / modify / delete tool.
+- **Loopback only**: default `http://127.0.0.1:47821/mcp`; enable, disable or
+  change the port in **Settings → MCP**.
+- **Tools**: `list_sessions`, `list_trades`, `get_trade`, `get_trade_context`,
+  `get_candles`, `analyze_trades`.
+- **DeepSeek Harness**: copy the `cordis.patch.yml` entry from the settings page,
+  or install the local bundle in `integrations/dsh-mcp/`.
+- **R convention**: the server exposes both the app's `rMultiple` and
+  `rOnRiskTarget` (profit / session risk budget). The former is distorted when
+  the stop has been moved; see [docs/mcp.md](docs/mcp.md).
+
+A worked example over 379 XAUUSD trades (loss commonalities / win commonalities)
+is in [reports/](reports/); every number there was pulled through this MCP server.
 
 ## Keyboard shortcuts
 

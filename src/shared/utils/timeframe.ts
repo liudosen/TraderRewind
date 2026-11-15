@@ -24,6 +24,28 @@ export interface TimeframeOption {
   seconds: number
 }
 
+/**
+ * IPC 传回的 Float64 缓冲 → K 线数组（每根 6 个字段）。
+ *
+ * 训练回放和交易截图读的是同一种缓冲，放在共享层避免各写一份。
+ */
+export function bufferToBars(buffer: ArrayBuffer, count: number): Bar[] {
+  const view = new Float64Array(buffer)
+  const bars: Bar[] = new Array(count)
+  for (let i = 0; i < count; i++) {
+    const o = i * 6
+    bars[i] = {
+      time: view[o],
+      open: view[o + 1],
+      high: view[o + 2],
+      low: view[o + 3],
+      close: view[o + 4],
+      volume: view[o + 5]
+    }
+  }
+  return bars
+}
+
 export const BASE_TIMEFRAMES: TimeframeOption[] = [
   { id: 'M1', code: 'M1', name: '1 分钟', seconds: 60 },
   { id: 'M5', code: 'M5', name: '5 分钟', seconds: 300 },

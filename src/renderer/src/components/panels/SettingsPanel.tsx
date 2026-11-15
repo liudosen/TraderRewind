@@ -17,7 +17,12 @@ import {
   Download,
   ArrowUpRight,
   RefreshCw,
-  Gauge
+  Gauge,
+  Cable,
+  Copy,
+  Check,
+  Power,
+  Camera
 } from 'lucide-react'
 import clsx from 'clsx'
 import { formatBytes } from '../../utils/format'
@@ -28,6 +33,16 @@ import { useTrainingStore } from '../../stores/training-store'
 import { updatePercent, useUpdateStore } from '../../stores/update-store'
 import { indicatorTitle } from '@shared/utils/indicators'
 import { MAX_TAG_LIBRARY, MAX_TRADE_TAG_LEN } from '@shared/types/trade-tags'
+import {
+  AUTO_SHOT_TIMEFRAMES,
+  MAX_AUTO_SHOT_TIMEFRAMES
+} from '@shared/types/auto-shot'
+import {
+  isChartTimeframe,
+  timeframeCode,
+  timeframeName
+} from '@shared/utils/timeframe'
+import type { McpStatus } from '@shared/types/mcp'
 import {
   DEFAULT_TIMEZONE,
   TIMEZONE_OPTIONS,
@@ -45,7 +60,7 @@ import {
 } from '@shared/types/chart-theme'
 
 /** 设置页的分栏：配置项太多，按类型切成 Tab */
-type TabId = 'general' | 'trading' | 'chart' | 'indicator'
+type TabId = 'general' | 'trading' | 'chart' | 'indicator' | 'mcp'
 
 const TAB_STORE_KEY = 'rw.settings.tab'
 
@@ -63,7 +78,8 @@ const TABS: {
     labelKey: 'settings.tab.indicator',
     descKey: 'settings.tab.indicatorDesc',
     icon: Activity
-  }
+  },
+  { id: 'mcp', labelKey: 'settings.tab.mcp', descKey: 'settings.tab.mcpDesc', icon: Cable }
 ]
 
 interface StorageInfo {
@@ -77,6 +93,22 @@ interface StorageInfo {
 }
 
 type Kind = 'kline' | 'training'
+
+/** 和训练工具栏共用：用户创建过的自定义周期（C7 这种，单位分钟） */
+const CUSTOM_TF_KEY = 'tr:customTimeframes'
+
+function loadCustomTimeframes(): string[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_TF_KEY)
+    const arr = raw ? JSON.parse(raw) : null
+    if (Array.isArray(arr)) {
+      return arr.filter((x: any) => typeof x === 'string' && isChartTimeframe(x))
+    }
+  } catch {
+    // 忽略
+  }
+  return []
+}
 
 export function SettingsPanel(): React.JSX.Element {
   const { t } = useT()
@@ -124,6 +156,48 @@ export function SettingsPanel(): React.JSX.Element {
   /** 标签库：下单备注浮窗里可一键点亮的常用标签 */
   const tagLibrary = useTrainingStore((s) => s.tagLibrary)
   const setTagLibrary = useTrainingStore((s) => s.setTagLibrary)
+  /** 自动截图：订单完全平仓后按这些周期各截一张（最多 5 个） */
+  const autoShotTimeframes = useTrainingStore((s) => s.autoShotTimeframes)
+  const setAutoShotTimeframes = useTrainingStore((s) => s.setAutoShotTimeframes)
+  /** 自定义周期和训练工具栏共用一份 localStorage；两边看到的列表保持一致 */
+  const [customTfs, setCustomTfs] = useState<string[]>(loadCustomTimeframes)
+  const [autoCustomVal, setAutoCustomVal] = useState('')
+  const autoShotChoices = Array.from(
+    new Set([
+      ...customTfs,
+      // 就算 localStorage 被清了，已经选中的自定义周期也得能显示 / 取消
+      ...autoShotTimeframes.filter(
+        (tf) => !(AUTO_SHOT_TIMEFRAMES as readonly string[]).includes(tf)
+      ),
+      ...AUTO_SHOT_TIMEFRAMES
+    ])
+  )
+
+  /**
+   * 添加自定义周期（分钟，1~10080 一周期），规则和训练页的周期菜单完全一致：
+   * 同样的 C{n} 编号、同样写进 tr:customTimeframes，训练页也会看到这个周期。
+   */
+  const addCustomAutoShot = (): void => {
+    const n = Math.floor(Number(autoCustomVal))
+    if (!Number.isFinite(n) || n < 1 || n > 10080) return
+    const id = `C${n}`
+    if (!customTfs.includes(id)) {
+      const next = [...customTfs, id]
+      setCustomTfs(next)
+      try {
+        localStorage.setItem(CUSTOM_TF_KEY, JSON.stringify(next))
+      } catch {
+        // 隐私模式下写不了，忽略
+      }
+    }
+    if (
+      !autoShotTimeframes.includes(id) &&
+      autoShotTimeframes.length < MAX_AUTO_SHOT_TIMEFRAMES
+    ) {
+      setAutoShotTimeframes([...autoShotTimeframes, id])
+    }
+    setAutoCustomVal('')
+  }
   const [tagInputOpen, setTagInputOpen] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
   const tagInputRef = useRef<HTMLInputElement>(null)
@@ -505,6 +579,102 @@ export function SettingsPanel(): React.JSX.Element {
           </div>
         </section>
 
+        {/* ── 自动截图（交易） ─────────────────── */}
+        <section className={clsx('mb-6', tab !== 'trading' && 'hidden')}>
+          <div className="mb-3 flex items-center gap-2">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+              {t('settings.autoShot.title')}
+            </h2>
+            <span className="text-[10px] text-[var(--text-faint)]">{t('settings.autoShot.hint')}</span>
+            {autoShotTimeframes.length > 0 && (
+              <button
+                onClick={() => setAutoShotTimeframes([])}
+                className="ml-auto inline-flex items-center gap-1 rounded border border-[var(--border-subtle)] px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+              >
+                <RotateCcw size={10} />
+                {t('settings.autoShot.clear')}
+              </button>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-[var(--border-subtle)] px-4 py-2.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Camera size={11} className="shrink-0 text-[var(--text-faint)]" />
+              {autoShotChoices.map((tf) => {
+                const on = autoShotTimeframes.includes(tf)
+                const full = !on && autoShotTimeframes.length >= MAX_AUTO_SHOT_TIMEFRAMES
+                return (
+                  <button
+                    key={tf}
+                    disabled={full}
+                    title={timeframeName(tf)}
+                    onClick={() => {
+                      if (on) {
+                        setAutoShotTimeframes(autoShotTimeframes.filter((x) => x !== tf))
+                      } else if (!full) {
+                        setAutoShotTimeframes([...autoShotTimeframes, tf])
+                      }
+                    }}
+                    className={clsx(
+                      'rounded border px-2 py-0.5 font-mono text-[10.5px] transition-colors',
+                      on
+                        ? 'border-[var(--c-accent)] bg-[var(--c-accent-tint)] text-[var(--c-accent)]'
+                        : full
+                          ? 'cursor-not-allowed border-[var(--border-subtle)] text-[var(--text-faint)] opacity-40'
+                          : 'border-[var(--border-subtle)] text-[var(--text-secondary)] hover:border-[var(--c-accent)] hover:text-[var(--c-accent)]'
+                    )}
+                  >
+                    {timeframeCode(tf)}
+                  </button>
+                )
+              })}
+              <span className="ml-auto font-mono text-[10px] text-[var(--text-faint)]">
+                {autoShotTimeframes.length}/{MAX_AUTO_SHOT_TIMEFRAMES}
+              </span>
+            </div>
+
+            {/* 自定义周期：和图表工具栏同一套规则（1~10080 分钟，C{n}） */}
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-[var(--border-subtle)] pt-2">
+              <span className="text-[10.5px] text-[var(--text-faint)]">
+                {t('settings.autoShot.custom')}
+              </span>
+              <input
+                type="number"
+                min={1}
+                max={10080}
+                value={autoCustomVal}
+                onChange={(e) => setAutoCustomVal(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    addCustomAutoShot()
+                  }
+                }}
+                placeholder={t('settings.autoShot.customPlaceholder')}
+                className="h-6 w-20 rounded border border-[var(--border-subtle)] bg-[var(--surface-2)] px-1.5 text-right font-mono text-[11px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--c-accent)]"
+              />
+              <span className="text-[10px] text-[var(--text-faint)]">
+                {t('settings.autoShot.customUnit')}
+              </span>
+              <button
+                onClick={addCustomAutoShot}
+                className="rounded border border-[var(--border-subtle)] px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--c-accent)] hover:text-[var(--c-accent)]"
+              >
+                {t('settings.autoShot.customAdd')}
+              </button>
+              <span className="text-[10px] text-[var(--text-faint)]">
+                {t('settings.autoShot.customHint')}
+              </span>
+            </div>
+
+            <p className="mt-2 text-[10.5px] leading-relaxed text-[var(--text-faint)]">
+              {autoShotTimeframes.length === 0
+                ? t('settings.autoShot.off')
+                : t('settings.autoShot.note')}
+            </p>
+          </div>
+        </section>
+
         {/* ── 图表外观（图表） ─────────────────── */}
         <section className={clsx('mb-6', tab !== 'chart' && 'hidden')}>
           <div className="mb-3 flex items-center gap-2">
@@ -709,6 +879,11 @@ export function SettingsPanel(): React.JSX.Element {
           </div>
         </section>
 
+        {/* ── MCP（AI 接入） ─────────────────────── */}
+        <section className={clsx('mb-6', tab !== 'mcp' && 'hidden')}>
+          <McpSettingsSection />
+        </section>
+
         {/* ── 关于（通用） ─────────────────────── */}
         <div className={clsx('mb-6', tab !== 'general' && 'hidden')}>
           <Section title={t('settings.about.title')} cols={2}>
@@ -728,6 +903,284 @@ export function SettingsPanel(): React.JSX.Element {
         </div>
       </div>
     </div>
+  )
+}
+
+function McpSettingsSection(): React.JSX.Element {
+  const { t } = useT()
+  const [status, setStatus] = useState<McpStatus | null>(null)
+  const [port, setPort] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [copied, setCopied] = useState<'url' | 'config' | null>(null)
+
+  const load = async (syncPort = true): Promise<void> => {
+    try {
+      const s = (await window.api.mcpGetStatus()) as McpStatus
+      setStatus(s)
+      if (syncPort) setPort(String(s.port))
+    } catch (e: any) {
+      setNotice({ kind: 'err', text: e?.message ?? String(e) })
+    }
+  }
+
+  useEffect(() => {
+    void load()
+    // 主进程的 MCP 服务在窗口创建后才异步启动，晚一点再拉一次；
+    // 之后低频刷新连接数，别在用户改端口时把输入框覆盖掉。
+    const retry = setTimeout(() => void load(false), 1200)
+    const timer = setInterval(() => void load(false), 5000)
+    return () => {
+      clearTimeout(retry)
+      clearInterval(timer)
+    }
+  }, [])
+
+  const apply = async (patch: { enabled?: boolean; port?: number }): Promise<void> => {
+    setBusy(true)
+    setNotice(null)
+    try {
+      const s = (await window.api.mcpSetSettings(patch)) as McpStatus
+      setStatus(s)
+      setPort(String(s.port))
+      if (s.error) setNotice({ kind: 'err', text: s.error })
+      else setNotice({ kind: 'ok', text: s.running ? t('settings.mcp.on') : t('settings.mcp.off') })
+    } catch (e: any) {
+      setNotice({ kind: 'err', text: e?.message ?? String(e) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const applyPort = (): void => {
+    const n = Number(port)
+    if (!Number.isInteger(n) || n < 1024 || n > 65535) {
+      setNotice({ kind: 'err', text: t('settings.mcp.portInvalid') })
+      return
+    }
+    void apply({ port: n })
+  }
+
+  const copy = async (text: string, which: 'url' | 'config'): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(which)
+      setTimeout(() => setCopied(null), 1500)
+    } catch {
+      setNotice({ kind: 'err', text: 'Clipboard unavailable' })
+    }
+  }
+
+  const url = status?.url ?? `http://127.0.0.1:${status?.port ?? 47821}/mcp`
+  const config = [
+    '- insert:',
+    '    - id: traderrewind-mcp',
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    '      config:',
+    '        serverName: traderrewind',
+    '        transport: streamable-http',
+    `        url: ${url}`,
+    '        toolCallTimeoutMs: 120000'
+  ].join('\n')
+
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+          {t('settings.mcp.title')}
+        </h2>
+        <span className="text-[10px] text-[var(--text-faint)]">{t('settings.mcp.hint')}</span>
+        <span
+          className={clsx(
+            'ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium',
+            status?.running
+              ? 'bg-[var(--c-pos-tint)] text-[var(--c-pos)]'
+              : status?.error
+                ? 'bg-[var(--c-neg-tint)] text-[var(--c-neg)]'
+                : 'bg-[var(--surface-3)] text-[var(--text-muted)]'
+          )}
+        >
+          <span
+            className={clsx(
+              'h-1.5 w-1.5 rounded-full',
+              status?.running
+                ? 'bg-[var(--c-pos)]'
+                : status?.error
+                  ? 'bg-[var(--c-neg)]'
+                  : 'bg-[var(--text-faint)]'
+            )}
+          />
+          {status?.running
+            ? t('settings.mcp.on')
+            : status?.error
+              ? t('settings.mcp.error')
+              : t('settings.mcp.off')}
+        </span>
+      </div>
+
+      {notice && (
+        <div
+          className={clsx(
+            'mb-3 flex items-start gap-2 rounded-md border px-3 py-2 text-[11px]',
+            notice.kind === 'ok'
+              ? 'border-[var(--c-pos)]/40 bg-[var(--c-pos-tint)] text-[var(--c-pos)]'
+              : 'border-[var(--c-neg)]/40 bg-[var(--c-neg-tint)] text-[var(--c-neg)]'
+          )}
+        >
+          {notice.kind === 'ok' ? (
+            <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
+          ) : (
+            <AlertCircle size={12} className="mt-0.5 shrink-0" />
+          )}
+          <span className="break-all">{notice.text}</span>
+        </div>
+      )}
+
+      <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-1)] p-4">
+        <div className="flex flex-wrap items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-faint)]">
+              {t('settings.mcp.url')}
+            </div>
+            <div className="mt-1 flex items-center gap-2">
+              <code className="min-w-0 break-all rounded border border-[var(--border-subtle)] bg-[var(--surface-0)] px-2 py-1 font-mono text-[11px] text-[var(--text-primary)]">
+                {url}
+              </code>
+              <button
+                type="button"
+                onClick={() => void copy(url, 'url')}
+                className="inline-flex shrink-0 items-center gap-1 rounded border border-[var(--border-subtle)] px-2 py-1 text-[10.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--c-accent)] hover:text-[var(--c-accent)]"
+              >
+                {copied === 'url' ? <Check size={11} /> : <Copy size={11} />}
+                {copied === 'url' ? t('settings.mcp.copied') : t('settings.mcp.copy')}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-end gap-1.5">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-faint)]">
+                {t('settings.mcp.port')}
+              </span>
+              <input
+                value={port}
+                inputMode="numeric"
+                onChange={(e) => setPort(e.target.value.replace(/[^\d]/g, ''))}
+                className="h-7 w-[74px] rounded border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2 text-right font-mono text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--c-accent)]"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={applyPort}
+              className="h-7 rounded bg-[var(--c-accent)] px-2.5 text-[11px] font-medium text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t('settings.mcp.apply')}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void apply({ enabled: !status?.running })}
+              className={clsx(
+                'inline-flex h-7 items-center gap-1.5 rounded border px-2.5 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40',
+                status?.running
+                  ? 'border-[var(--c-neg)]/50 text-[var(--c-neg)] hover:bg-[var(--c-neg-tint)]'
+                  : 'border-[var(--c-pos)]/50 text-[var(--c-pos)] hover:bg-[var(--c-pos-tint)]'
+              )}
+            >
+              <Power size={11} />
+              {status?.running ? t('settings.mcp.disable') : t('settings.mcp.enable')}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--border-subtle)] text-center [&>*]:bg-[var(--surface-1)]">
+          <div className="px-2 py-2">
+            <div className="font-mono text-[13px] text-[var(--text-primary)]">
+              {status?.sessions ?? 0}
+            </div>
+            <div className="mt-0.5 text-[9.5px] text-[var(--text-faint)]">
+              {t('settings.mcp.sessions')}
+            </div>
+          </div>
+          <div className="px-2 py-2">
+            <div className="font-mono text-[13px] text-[var(--text-primary)]">
+              {status?.tools.length ?? 0}
+            </div>
+            <div className="mt-0.5 text-[9.5px] text-[var(--text-faint)]">
+              {t('settings.mcp.tools')}
+            </div>
+          </div>
+          <div className="px-2 py-2">
+            <div className="font-mono text-[13px] text-[var(--text-primary)]">
+              {status?.startedAt ? new Date(status.startedAt).toLocaleTimeString() : '--'}
+            </div>
+            <div className="mt-0.5 text-[9.5px] text-[var(--text-faint)]">
+              {t('settings.mcp.startedAt')}
+            </div>
+          </div>
+        </div>
+
+        {status?.error && (
+          <p className="mt-2 flex items-start gap-1 text-[10.5px] leading-tight text-[var(--c-neg)]">
+            <AlertCircle size={11} className="mt-[1px] shrink-0" />
+            <span>{status.error}</span>
+          </p>
+        )}
+        {!status?.enabled && (
+          <p className="mt-2 text-[10.5px] text-[var(--text-faint)]">{t('settings.mcp.needEnable')}</p>
+        )}
+        <p className="mt-2 text-[10.5px] leading-relaxed text-[var(--text-faint)]">
+          {t('settings.mcp.note')}
+        </p>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 flex items-center gap-2">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+            {t('settings.mcp.configTitle')}
+          </h2>
+          <button
+            type="button"
+            onClick={() => void copy(config, 'config')}
+            className="ml-auto inline-flex items-center gap-1 rounded border border-[var(--border-subtle)] px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--c-accent)] hover:text-[var(--c-accent)]"
+          >
+            {copied === 'config' ? <Check size={10} /> : <Copy size={10} />}
+            {copied === 'config' ? t('settings.mcp.configCopied') : t('settings.mcp.copyConfig')}
+          </button>
+        </div>
+        <p className="mb-2 text-[10.5px] leading-relaxed text-[var(--text-faint)]">
+          {t('settings.mcp.configHint')}
+        </p>
+        <pre className="max-h-52 overflow-auto rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-0)] p-3 font-mono text-[10.5px] leading-relaxed text-[var(--text-secondary)]">
+          {config}
+        </pre>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 flex items-center gap-2">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+            {t('settings.mcp.toolsTitle')}
+          </h2>
+          <span className="rounded-full bg-[var(--surface-3)] px-1.5 py-px font-mono text-[9px] text-[var(--text-secondary)]">
+            {status?.tools.length ?? 0}
+          </span>
+        </div>
+        <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-lg border border-[var(--border-subtle)]">
+          {(status?.tools ?? []).map((tool) => (
+            <div key={tool.name} className="px-3 py-2">
+              <div className="flex items-baseline gap-2">
+                <code className="font-mono text-[11px] text-[var(--c-accent)]">{tool.name}</code>
+                <span className="text-[10.5px] text-[var(--text-secondary)]">{tool.title}</span>
+              </div>
+              <p className="mt-0.5 text-[10px] leading-relaxed text-[var(--text-faint)]">
+                {tool.description}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
   )
 }
 

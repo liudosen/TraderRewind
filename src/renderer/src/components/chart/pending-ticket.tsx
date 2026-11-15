@@ -111,6 +111,7 @@ export function PendingTicket({
 
       {/* 右框：按当前止损算出来的金额（没设止损时是提示文案，用次级色） */}
       <span
+        title={order.sl == null ? t('chart.pendingSlFirstHint') : undefined}
         className="inline-flex h-[21px] items-center rounded-[3px] border border-[var(--border-strong)] px-2 font-mono text-[11px] leading-none shadow-[0_1px_5px_rgba(0,0,0,0.7)]"
         style={{
           color: order.riskIsLoss ? 'var(--c-pos)' : 'var(--text-muted)',

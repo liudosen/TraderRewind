@@ -27,6 +27,8 @@ export default function App(): React.JSX.Element {
     void useTrainingStore.getState().loadTagLibrary()
     // 交易成本模型（手续费 + 滑点）：下单/平仓时按它算成交价和佣金
     void useTrainingStore.getState().loadExecutionCost()
+    // 自动截图周期：订单平仓后按它离屏截 K 线图
+    void useTrainingStore.getState().loadAutoShotSettings()
   }, [])
 
   /**

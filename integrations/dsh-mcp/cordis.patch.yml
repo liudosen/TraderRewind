@@ -1,0 +1,21 @@
+# TraderRewind → DeepSeek Harness MCP bridge
+#
+# Prerequisite: TraderRewind is running with its local MCP server enabled
+# (Settings → MCP, default http://127.0.0.1:47821/mcp).
+#
+# This entry only connects; if the app is closed, DSH still starts and the
+# tools reconnect when TraderRewind comes back (failOnStartupError: false).
+- insert:
+    - id: traderrewind-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: traderrewind
+        transport: streamable-http
+        url: http://127.0.0.1:47821/mcp
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 20

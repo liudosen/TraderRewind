@@ -1657,7 +1657,7 @@ export function TrainingPane(): React.JSX.Element {
         side: orderDraft.side === 'buy' ? t('training.buy') : t('training.sell'),
         lot: lot.toFixed(2)
       }),
-      riskText: slNet == null ? t('chart.pendingNoSl') : money(slNet),
+      riskText: slNet == null ? t('chart.pendingSlFirst') : money(slNet),
       riskIsLoss: slNet != null && slNet < 0,
       slLabel: slNet == null ? '' : money(slNet),
       tpLabel: tpNet == null ? '' : money(tpNet)
@@ -1667,14 +1667,19 @@ export function TrainingPane(): React.JSX.Element {
   /**
    * 拖待确认单的止损/止盈。
    *
+   * 顺序是硬性的「先止损、再止盈」：还没设止损时不接受止盈 —— 图上没拖出止损之前，
+   * 鼠标往上一滑不该凭空留下一条贴着开仓价的极窄止盈。止损设好之后才轮到止盈。
+   *
    * 夹取规则比持仓宽松一点，因为这时候还没有持仓、也就没有「现价」可参考：
    * 止损只能落在开仓价的亏损侧、止盈只能落在盈利侧，各自至少离一个最小跳动。
-   * 反向越界不是「拒绝」，而是贴着边界 —— 手感上像拖到墙，不会突然弹回去。
+   * 图上已经按顺序和方向拦过一道，这里再把落点夹到正确的一侧（贴边而不是 0 距离）。
    */
   const setPendingRisk = useCallback(
     (kind: 'sl' | 'tp', price: number): void => {
       setOrderDraft((d) => {
         if (!d) return d
+        // 先止损、再止盈（图表那边也按这个顺序拦，这里再兜一层）
+        if (kind === 'tp' && d.sl == null) return d
         const point = Math.pow(10, -priceDigits)
         const buy = d.side === 'buy'
         const v = Number(price.toFixed(priceDigits))
@@ -2888,8 +2893,6 @@ export function TrainingPane(): React.JSX.Element {
                   trades={closedTrades}
                   focusedTrade={focusedTrade}
                   focusSeq={focusSeq}
-                  // 选中副窗时由副窗定位（各窗的「150 根」跨度不同，不能同时定位）
-                  focusTarget={!activeSub}
                   onClearFocus={() => setFocusedTrade(null)}
                   // 待确认单只画在“当前选中的窗口”：选中副窗时主图不再显示票面
                   pendingOrder={activeSub ? null : pendingView}
@@ -2983,7 +2986,7 @@ export function TrainingPane(): React.JSX.Element {
                               hideSubIndicator(sub.id, kind, uid, hidden)
                             }
                             label={t('chart.subPaneLabel', { n: i + 2 })}
-                            // 订单历史线每个窗口都画；但只有选中的那个窗口负责「跳过去」
+                            // 订单历史线每个窗口都画；点订单时每个窗口也各自定位过去
                             trades={closedTrades}
                             // 持仓（开仓 / 止损 / 止盈）三个窗口都画，也都能拖
                             positions={positions}
@@ -3002,7 +3005,6 @@ export function TrainingPane(): React.JSX.Element {
                             onPendingCancel={() => setOrderDraft(null)}
                             focusedTrade={focusedTrade}
                             focusSeq={focusSeq}
-                            followFocus={activePane === sub.id}
                             recenterSeq={recenterSeq}
                             onTimeframeChange={(tf) => setSubTf(sub.id, tf)}
                             onToggleFollow={() => toggleSubFollow(sub.id)}
@@ -3866,6 +3868,9 @@ export function TrainingPane(): React.JSX.Element {
         <TradeMetaDialog
           trade={editingTrade}
           tz={activeSession?.tz ?? timezone}
+          sessionId={activeSession?.id ?? null}
+          datasetId={activeSession?.dataset_id ?? null}
+          timeframe={activeSession?.display_timeframe ?? null}
           onClose={() => setEditingTrade(null)}
           onSave={async (note, tags) => {
             const sid = activeSession?.id

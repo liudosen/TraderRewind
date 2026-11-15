@@ -20,3 +20,15 @@ Thumbs.db
 
 # 开发期 CDP 巡检截图
 shots/
+
+# 本地测试用 userData / 日志
+.tmp/
+
+# MCP 分析导出的原始上下文（体积大，可随时重新生成）
+analysis/data/contexts.jsonl
+analysis/data/contexts.done
+analysis/data/contexts.failed.json
+
+# Python 缓存 / 分析脚本写库前的本地备份
+__pycache__/
+analysis/output/*.db.bak*

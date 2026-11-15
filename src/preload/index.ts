@@ -36,6 +36,22 @@ const api = {
   updateTradeMeta: (sessionId: number, tradeId: string, meta: { note?: string | null; tags?: string[] }) =>
     ipcRenderer.invoke(IPC.DB_UPDATE_CLOSED_TRADE_META, sessionId, tradeId, meta),
 
+  // ----- 数据库: 交易截图 -----
+  /** 只取元信息（宽高 / 大小 / 时间），缩略图再逐张按 id 取 */
+  listTradeScreenshots: (sessionId: number, tradeId: string) =>
+    ipcRenderer.invoke(IPC.DB_LIST_TRADE_SCREENSHOTS, sessionId, tradeId),
+  getTradeScreenshot: (id: string) => ipcRenderer.invoke(IPC.DB_GET_TRADE_SCREENSHOT, id),
+  /** dataUrl 形如 data:image/png;base64,...，主进程校验后落库 */
+  addTradeScreenshot: (input: {
+    sessionId: number
+    tradeId: string
+    dataUrl: string
+    width: number
+    height: number
+  }) => ipcRenderer.invoke(IPC.DB_ADD_TRADE_SCREENSHOT, input),
+  deleteTradeScreenshot: (id: string) =>
+    ipcRenderer.invoke(IPC.DB_DELETE_TRADE_SCREENSHOT, id),
+
   // ----- 数据库: K线 -----
   getCandlesRange: (datasetId: number, fromTime: number, toTime: number) =>
     ipcRenderer.invoke(IPC.DB_GET_CANDLES_RANGE, datasetId, fromTime, toTime),
@@ -68,6 +84,12 @@ const api = {
   openCsvFile: () => ipcRenderer.invoke(IPC.FILE_OPEN_CSV),
   readCsvFile: (path: string) => ipcRenderer.invoke(IPC.FILE_READ_CSV, path),
   saveCsvFile: (name: string, content: string) => ipcRenderer.invoke(IPC.FILE_SAVE_CSV, name, content),
+  /** 把二维表写成真正的 .xlsx（日志页「导出 Excel」用） */
+  exportXlsx: (payload: {
+    fileName: string
+    sheetName: string
+    rows: (string | number | null)[][]
+  }) => ipcRenderer.invoke(IPC.FILE_EXPORT_XLSX, payload),
 
   // ----- 数据源与下载 -----
   /** `force` 跳过主进程的 60 秒品种缓存（手动「刷新品种」用） */
@@ -104,6 +126,16 @@ const api = {
   setTradeTags: (tags: string[]) => ipcRenderer.invoke(IPC.SETTINGS_SET_TRADE_TAGS, tags),
   getExecutionCost: () => ipcRenderer.invoke(IPC.SETTINGS_GET_EXECUTION_COST),
   setExecutionCost: (cost: any) => ipcRenderer.invoke(IPC.SETTINGS_SET_EXECUTION_COST, cost),
+  /** 自动截图周期（最多 5 个，空数组 = 关闭） */
+  getAutoShotTimeframes: () => ipcRenderer.invoke(IPC.SETTINGS_GET_AUTO_SHOTS),
+  setAutoShotTimeframes: (timeframes: string[]) =>
+    ipcRenderer.invoke(IPC.SETTINGS_SET_AUTO_SHOTS, timeframes),
+
+  // ----- 本地 MCP 服务 -----
+  mcpGetStatus: () => ipcRenderer.invoke(IPC.MCP_GET_STATUS),
+  mcpSetSettings: (patch: { enabled?: boolean; port?: number }) =>
+    ipcRenderer.invoke(IPC.MCP_SET_SETTINGS, patch),
+  mcpRestart: () => ipcRenderer.invoke(IPC.MCP_RESTART),
 
   // ----- 窗口 -----
   minimize: () => ipcRenderer.invoke(IPC.WINDOW_MINIMIZE),

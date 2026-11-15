@@ -174,13 +174,6 @@ interface ReplayChartProps {
   /** 定位序号：同一笔交易被反复点选时用它强制重新定位 */
   focusSeq?: number
   /**
-   * 这笔交易该不该由本图去定位（默认 true）。
-   *
-   * 双周期分屏时只有一个窗口能「跳过去」：两边的 150 根跨度完全不同，
-   * 都设一遍只会互相覆盖。谁被选中谁定位，另一个靠时间范围同步跟过去。
-   */
-  focusTarget?: boolean
-  /**
    * 当前允许显示到哪一根 K 线（含）—— 回放没走完时就是游标那一根。
    *
    * 由上层用 `revealIndexOf(bars, cursor, completedAt)` 算好传进来：
@@ -652,7 +645,6 @@ export function ReplayChart({
   trades,
   focusedTrade,
   focusSeq,
-  focusTarget = true,
   revealIndex,
   onClearFocus,
   pendingOrder,
@@ -777,6 +769,9 @@ export function ReplayChart({
    *  · 'free' —— 两个都还没设，拖到哪边就设哪个（实时跟着方向切换）
    *  · 'sl'   —— 已有止盈，这次只能拖止损
    *  · 'tp'   —— 已有止损，这次只能拖止盈
+   *
+   * 待确认单永远不走 'free'：没设止损时这一拖只能设止损，松开鼠标重新按下的那一拖
+   * 才能设止盈（先止损、再止盈，见 onMouseDown / onMouseMove 里的说明）。
    *
    * 在 mousedown 那一刻按当时的持仓快照定下来，拖完清空。
    * 不在移动过程中反复重算：否则同一拖里先往上（设了止盈）再往下，
@@ -2416,8 +2411,9 @@ export function ReplayChart({
     )
 
     /**
-     * 定位订单：固定给「左右一共 150 根」，一次设到位（口径见 ./trade-lines）。
+     * 定位订单：时间轴 + 价格轴一起归位。
      *
+     * 时间：固定给「左右一共 150 根」，一次设到位（口径见 ./trade-lines）。
      * 以前是「先整段铺满，如果订单被裁掉再缩过去」，有两个毛病：
      *  1) setVisibleLogicalRange 要等下一帧才真正应用，连设两次会互相覆盖，
      *     屏幕上先闪一下整段、再跳到订单，看着就是「卡一秒才找准」；
@@ -2425,14 +2421,14 @@ export function ReplayChart({
      *     于是压根不缩——点了订单却停在整段，位置还是没对准。
      * 现在统一成固定窗口：跨度永远 150 根，柱宽由宽度决定，每次定位屏幕都是铺满的。
      *
-     * 双周期开着、而用户选中的是副周期窗时，主图不再抢着定位：两个窗口各自的
-     * 「150 根」跨的时间长度完全不同（M15 是 37 小时、H1 是 6 天），都去设一遍
-     * 就是互相覆盖，最后停在谁那儿全看执行顺序。谁被选中谁定位，另一个跟着同步走。
+     * 价格：只挪时间轴、纵轴还停在原来的缩放上，订单线就可能落在屏幕外，
+     * 或者被压成贴着上下边框的一条细缝 —— 看起来就像「定位根本没对准」。
+     * 这里顺手把价格轴恢复成自动缩放，效果和用户双击一下右侧价格尺完全一样
+     * （手动拖过价格轴之后 autoScale 会被关掉，不重置的话它不会自己再适配）。
+     *
+     * 双周期分屏时每个窗口都做同一件事：各自按自己的 150 根把成交框住，
+     * 纵向各自 autoscale；不再只由「选中的那个窗口」跳过去、别的窗口等同步。
      */
-    if (!focusTarget) {
-      redrawRef.current()
-      return
-    }
     const range = focusLogicalRange({
       total: bars.length,
       // 可见上限：回放没走完时就是游标那根，不许把未来露出来
@@ -2441,12 +2437,15 @@ export function ReplayChart({
       idxOut: timeToLogical(focusedTrade.exitTime)
     })
     if (range) {
+      // 价格高度归位：等价于双击右侧价格尺（重新打开 autoScale，按可视 K 线重算）。
+      // 先重置纵轴再设时间范围，下一帧价格轴就会按新的可视 K 线重新自动缩放。
+      series.priceScale().applyOptions({ autoScale: true })
       // 这里故意不盖 autoRangeAtRef 的时间戳：定位之后的这一屏就是用户当下在看的窗口，
       // 让它记进 userWindowRef，接着切周期才会「留在这笔单子附近看」，而不是弹回原处。
       chart.timeScale().setVisibleLogicalRange(range)
     }
     redrawRef.current()
-  }, [focusedTrade?.id, focusSeq, bars.length, revealIndex, timeToLogical, t, focusTarget])
+  }, [focusedTrade?.id, focusSeq, bars.length, revealIndex, timeToLogical, t])
 
   // ---------- 交互：画线 + SL/TP 拖拽 ----------
   useEffect(() => {
@@ -2508,7 +2507,7 @@ export function ReplayChart({
        */
       const pend = pendingRef.current
       if (pend) {
-        // 两条线都空时，开仓线本身就是「拖出来设哪一条」的把手
+        // 两线没设全时，开仓线本身就是把手：先拖止损、再拖止盈（见 onMouseMove）
         if (pend.sl == null || pend.tp == null) consider(PENDING_ID, 'risk', pend.entry)
         consider(PENDING_ID, 'sl', pend.sl)
         consider(PENDING_ID, 'tp', pend.tp)
@@ -2743,6 +2742,9 @@ export function ReplayChart({
          * 拖开仓线之前先按「此刻」的持仓定一下这次允许设什么：
          * 两个都空 → 自由拖（方向决定是止损还是止盈）；
          * 已有止盈 → 只能拖止损；已有止损 → 只能拖止盈。
+         *
+         * 待确认单（还没成交的那张单）例外，只认「先止损、再止盈」：
+         * 没设止损时这次拖动只用来设止损，松开重新按下的下一拖才能设止盈。
          */
         if (hit.key === 'risk') {
           riskKindRef.current = null
@@ -2750,13 +2752,15 @@ export function ReplayChart({
             hit.id === PENDING_ID
               ? pendingRef.current
               : positionsRef.current.find((x) => x.id === hit.id)
-          riskModeRef.current = !src
-            ? 'free'
-            : src.sl == null && src.tp == null
-              ? 'free'
-              : src.sl == null
-                ? 'sl'
-                : 'tp'
+          if (!src) {
+            riskModeRef.current = 'free'
+          } else if (hit.id === PENDING_ID) {
+            // 待确认单：止盈必须排在止损后面 —— 没设止损时这一拖只设止损
+            riskModeRef.current = src.sl == null ? 'sl' : 'tp'
+          } else {
+            riskModeRef.current =
+              src.sl == null && src.tp == null ? 'free' : src.sl == null ? 'sl' : 'tp'
+          }
         } else {
           riskModeRef.current = null
         }
@@ -3059,27 +3063,28 @@ export function ReplayChart({
         /**
          * 待确认单：只有「拖出来设止损/止盈」这一种语义，没有持仓那边的成本价夹取。
          *
-         * 方向判定和持仓那条一样：往上甩是止盈、往下甩是止损（空头相反），
-         * 已经有了一边就只认缺的那一边。具体能拖到哪由上层夹取 ——
-         * 图表只负责把用户拖到的原始价报上去。
+         * 顺序固定成「先止损、再止盈」：
+         *  · 直接抓住 SL / TP 线：改抓住的那一条；
+         *  · 抓住开仓线：只改**按下那一刻缺的那一条**（riskModeRef 已经定死，拖动中途不换），
+         *    而且必须拖到它该在的那一侧 —— 拖到另一侧什么都不做。
+         *
+         * 不在另一侧做「贴着开仓价」的夹取：以前鼠标往上抖 1px 会被认成拖止盈，
+         * 随后往下拖又把止盈夹在开仓价旁边一个最小跳动上，留下一条用户根本没感知到的
+         * 极窄止盈。没拖出止损之前，止盈这一侧干脆不响应。
          */
         if (dragPosRef.current === PENDING_ID) {
           const pend = pendingRef.current
           if (!pend) return
-          const up = price > pend.entry
-          const byDir: 'sl' | 'tp' =
-            pend.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
-          const mode = riskModeRef.current
-          let kind: 'sl' | 'tp'
-          if (dragRef.current === 'sl' || dragRef.current === 'tp') {
-            kind = dragRef.current
-          } else if (mode === 'sl' || mode === 'tp') {
-            kind = mode
-          } else {
-            // 第一次越过 3px 后定方向，之后整段拖动不再翻转
-            if (!riskKindRef.current) riskKindRef.current = byDir
-            kind = riskKindRef.current
-          }
+          const kind: 'sl' | 'tp' =
+            dragRef.current === 'sl' || dragRef.current === 'tp'
+              ? dragRef.current
+              : riskModeRef.current === 'tp'
+                ? 'tp'
+                : 'sl'
+          // 多头的止损在下方、止盈在上方；空头反过来。正好压在开仓价上时两边都不算
+          const lossSide = pend.side === 'buy' ? price < pend.entry : price > pend.entry
+          const profitSide = pend.side === 'buy' ? price > pend.entry : price < pend.entry
+          if (kind === 'sl' ? !lossSide : !profitSide) return
           if (kind === 'sl') pendingCbRef.current.sl?.(price)
           else pendingCbRef.current.tp?.(price)
           return

@@ -134,12 +134,10 @@ interface Props {
   onPendingTpChange?: (price: number) => void
   onPendingConfirm?: () => void
   onPendingCancel?: () => void
-  /** 报告/日志里点选的那一笔：两边都高亮，只有选中窗口负责跳过去 */
+  /** 报告/日志里点选的那一笔：所有窗口都高亮，并且都各自跳到这笔成交上 */
   focusedTrade: ClosedTrade | null
   /** 定位序号：同一笔被反复点选时用它强制重新定位 */
   focusSeq: number
-  /** 这一笔要不要由本窗去定位（= 本窗是选中的那个） */
-  followFocus: boolean
   /**
    * 「归位」信号：主窗口按空格 / 点归位时 +1。
    * 只有收到信号的那个副窗把视野拉回最新一根 —— 播放过程中绝不自己动。
@@ -160,6 +158,15 @@ type TimeScaleLike = ITimeScaleApi<Time>
  * 一次真实拖动也吞掉。
  */
 const SYNC_MUTE_MS = 150
+/**
+ * 点订单归位后，主图推过来的时间范围要静默这么久。
+ *
+ * 点一笔成交时所有窗口都会各自定位一次；主图也在同一轮里改了时间范围，
+ * 跟随中的副窗如果立刻把主图的范围接过来，就会把本窗刚摆好的「150 根」覆盖掉
+ * （M5 的 150 根和 H1 的 150 根根本不是同一段时间）。留一个覆盖两三次绘制循环的
+ * 静默窗，让每个窗口先把自己的定位落稳；用户随后真正拖动主图时，事件早已过了窗口期。
+ */
+const FOCUS_SYNC_MUTE_MS = 400
 /** 第一次落图 / 换回测集时，默认给多少根 K 线的视野 */
 const DEFAULT_VISIBLE_BARS = 80
 /**
@@ -248,7 +255,6 @@ export function SecondaryChart({
   onPendingCancel,
   focusedTrade,
   focusSeq,
-  followFocus,
   recenterSeq,
   onTimeframeChange,
   onToggleFollow,
@@ -332,6 +338,8 @@ export function SecondaryChart({
   tradesRef.current = trades
   const focusedRef = useRef<ClosedTrade | null>(focusedTrade)
   focusedRef.current = focusedTrade
+  /** 上一次「点订单」给本窗摆视野的时刻（见 FOCUS_SYNC_MUTE_MS）；-Infinity = 还没点过 */
+  const focusAtRef = useRef(Number.NEGATIVE_INFINITY)
   const barsRef = useRef<Bar[]>([])
   /** 被定位那笔的开/平仓价格线 */
   const focusLinesRef = useRef<IPriceLine[]>([])
@@ -996,7 +1004,7 @@ export function SecondaryChart({
     }
   }, [mainChart, mainSeries])
 
-  /** 被定位的那一笔：两边都画开/平仓价格线，只有选中的那个窗口才把视野挪过去 */
+  /** 被定位的那一笔：两边都画开/平仓价格线（视野归位在下面单独的 effect 里） */
   useEffect(() => {
     const series = seriesRef.current
     if (!series) return
@@ -1300,8 +1308,19 @@ export function SecondaryChart({
         ? pendingRef.current
         : positionsRef.current.find((p) => p.id === hit.id) ?? null
       if (!src) return
-      const mode: 'free' | 'sl' | 'tp' =
-        src.sl == null && src.tp == null ? 'free' : src.sl == null ? 'sl' : 'tp'
+      /**
+       * 待确认单只认「先止损、再止盈」：没设止损时这一拖只改止损；
+       * 持仓还是老规则（两边都空时拖到哪边设哪边）。
+       */
+      const mode: 'free' | 'sl' | 'tp' = pending
+        ? src.sl == null
+          ? 'sl'
+          : 'tp'
+        : src.sl == null && src.tp == null
+          ? 'free'
+          : src.sl == null
+            ? 'sl'
+            : 'tp'
       posDragRef.current = { id: hit.id, key: hit.key, mode, startY: y, moved: false }
       riskKindRef.current = null
       if (!pending) onSelectPosition(hit.id)
@@ -1330,25 +1349,21 @@ export function SecondaryChart({
       if (drag.id === PENDING_ID) {
         const pend = pendingRef.current
         if (!pend) return
-        if (drag.key === 'sl') {
-          pendingCbRef.current.sl?.(Number(price))
-        } else if (drag.key === 'tp') {
-          pendingCbRef.current.tp?.(Number(price))
-        } else {
-          const point = Math.pow(10, -digits)
-          if (Math.abs(Number(price) - pend.entry) < point) return
-          const up = Number(price) > pend.entry
-          const byDir: 'sl' | 'tp' =
-            pend.side === 'buy' ? (up ? 'tp' : 'sl') : up ? 'sl' : 'tp'
-          let kind: 'sl' | 'tp'
-          if (drag.mode === 'sl' || drag.mode === 'tp') kind = drag.mode
-          else {
-            if (!riskKindRef.current) riskKindRef.current = byDir
-            kind = riskKindRef.current
-          }
-          if (kind === 'sl') pendingCbRef.current.sl?.(Number(price))
-          else pendingCbRef.current.tp?.(Number(price))
-        }
+        /**
+         * 和主图同一套规则：先止损、再止盈。
+         * 抓住开仓线时只改按下那一刻缺的那一条（drag.mode 定死），
+         * 拖到另一侧不改价 —— 不在开仓价旁边夹出一条极窄止盈/止损。
+         */
+        let kind: 'sl' | 'tp'
+        if (drag.key === 'sl' || drag.key === 'tp') kind = drag.key
+        else kind = drag.mode === 'tp' ? 'tp' : 'sl'
+        const value = Number(price)
+        // 多头的止损在下方、止盈在上方；空头反过来。正好压在开仓价上时两边都不算
+        const lossSide = pend.side === 'buy' ? value < pend.entry : value > pend.entry
+        const profitSide = pend.side === 'buy' ? value > pend.entry : value < pend.entry
+        if (kind === 'sl' ? !lossSide : !profitSide) return
+        if (kind === 'sl') pendingCbRef.current.sl?.(value)
+        else pendingCbRef.current.tp?.(value)
         e.preventDefault()
         return
       }
@@ -1398,13 +1413,24 @@ export function SecondaryChart({
     }
   }, [digits, onSelectPosition, onSlChange, onTpChange])
 
-  // 定位：只有「被选中的那个窗口」把视野挪到这笔单上，另一个靠时间范围同步跟过来
+  // 定位：每个窗口都自己挪到这笔成交上（不再只让「选中的那个窗口」动）
+  /**
+   * 时间轴 + 价格轴一起归位。
+   * 时间：本窗按自己的周期给「左右一共 150 根」，这笔成交正好落在中间
+   *       （口径和主图共用 ./trade-lines 里的 focusLogicalRange）。
+   * 价格：只挪时间轴的话，纵轴可能还停在用户上次手动缩放的位置，订单线会跑到
+   *       屏幕外，或者被压成贴着上下边框的一条细缝。这里把价格轴恢复成自动缩放，
+   *       效果和双击一下右侧价格尺完全一样（autoScale 打开后按可视 K 线重算）。
+   *
+   * 主图同一轮也会改自己的时间范围；跟随中的副窗先静默一会儿，
+   * 别让主图推过来的范围把本窗刚摆好的「150 根」覆盖掉（见 FOCUS_SYNC_MUTE_MS）。
+   */
   useEffect(() => {
-    if (!followFocus) return
     const chart = chartRef.current
+    const series = seriesRef.current
     const trade = focusedRef.current
     const list = barsRef.current
-    if (!chart || !trade || list.length < 2) return
+    if (!chart || !series || !trade || list.length < 2) return
     const range = focusLogicalRange({
       total: list.length,
       // 本窗的 bars 已经只到回放进度，最后一根就是上限
@@ -1412,8 +1438,12 @@ export function SecondaryChart({
       idxIn: indexAtTime(list, trade.entryTime),
       idxOut: indexAtTime(list, trade.exitTime)
     })
-    if (range) chart.timeScale().setVisibleLogicalRange(range)
-  }, [focusedTrade?.id, focusSeq, followFocus])
+    if (!range) return
+    focusAtRef.current = performance.now()
+    // 价格高度归位：等价于双击右侧价格尺（先重置纵轴，下一帧按新的可视 K 线重算）
+    series.priceScale().applyOptions({ autoScale: true })
+    chart.timeScale().setVisibleLogicalRange(range)
+  }, [focusedTrade?.id, focusSeq])
 
   /**
    * 手动「归位」：只有收到 recenterSeq 的那个窗口把视野拉回最新一根。
@@ -1549,6 +1579,8 @@ export function SecondaryChart({
     const chart = chartRef.current
     const main = mainChartRef.current
     if (!chart || !main || !followRef.current) return
+    // 刚点过订单：这一段是各窗自己「归位」的视野，主图的范围不能把它盖掉
+    if (performance.now() < focusAtRef.current + FOCUS_SYNC_MUTE_MS) return
     const r = readRange(main.timeScale())
     if (r) applyMainRange(r)
   }, [applyMainRange])
@@ -1673,6 +1705,8 @@ export function SecondaryChart({
 
     const onMain = (): void => {
       if (performance.now() < muteRef.current.main) return
+      // 刚点过订单：主图这一轮的变化来自「各窗各自归位」，不是用户在拖它
+      if (performance.now() < focusAtRef.current + FOCUS_SYNC_MUTE_MS) return
       // 副窗在驱动播放时也不让主图把它拉回自己的范围
       if (playingRef.current && activeRef.current) return
       if (!followRef.current) return

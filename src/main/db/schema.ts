@@ -515,6 +515,31 @@ const MARKET_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_datasets_group ON datasets(group_id);
 `
 
+/**
+ * 交易截图（日志页编辑一笔已平仓交易时，用图表截下来的 K 线图）。
+ *
+ * 单独用「幂等建表」而不是挂进 TRAINING_MIGRATIONS：
+ * 迁移表里存的是**版本号**，而这个工作区的迁移条数可能比用户库里的已用版本少
+ * （老版本/别的构建跑过更多次迁移），新条目会拿到一个「已经用过」的版本号而被跳过。
+ * 建表语句本身带 IF NOT EXISTS，每次启动跑一遍最稳。
+ *
+ * 图片直接存 BLOB 而不是散落在数据目录里：训练库是备份/同步的唯一单位，
+ * 图片独立成文件的话，换台机器恢复数据库后就只剩一堆裂图。
+ */
+const TRADE_SCREENSHOTS_DDL = `
+  CREATE TABLE IF NOT EXISTS trade_screenshots (
+    id TEXT PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    trade_id TEXT NOT NULL,
+    mime TEXT NOT NULL DEFAULT 'image/png',
+    bytes BLOB NOT NULL,
+    byte_size INTEGER NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    created_at INTEGER NOT NULL
+  )
+`
+
 const TRAINING_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_sessions_dataset ON sessions(dataset_id);
   CREATE INDEX IF NOT EXISTS idx_closed_trades_session ON closed_trades(session_id);
@@ -522,6 +547,7 @@ const TRAINING_INDEXES = `
   CREATE INDEX IF NOT EXISTS idx_imported_trades_account ON imported_trades(account_id);
   CREATE INDEX IF NOT EXISTS idx_imported_trades_symbol ON imported_trades(symbol);
   CREATE INDEX IF NOT EXISTS idx_journal_notes_ref ON journal_notes(ref_kind, ref_id);
+  CREATE INDEX IF NOT EXISTS idx_trade_screenshots_trade ON trade_screenshots(session_id, trade_id);
 `
 
 /** 行情库必需列 */
@@ -607,6 +633,8 @@ export function runTrainingMigrations(db: Database.Database): void {
   ensureColumn(db, 'sessions', 'tz', 'TEXT')
   // 交易时段（'HH:mm-HH:mm'，空 = 全天不限）：时段外禁止开仓
   ensureColumn(db, 'sessions', 'trade_window', 'TEXT')
+  // 截图表：幂等建表，不占迁移版本号（见 TRADE_SCREENSHOTS_DDL 的说明）
+  db.exec(TRADE_SCREENSHOTS_DDL)
   db.exec(TRAINING_INDEXES)
   assertSchema(db, TRAINING_REQUIRED, '训练库')
   if (n > 0) console.log(`[DB] 训练库迁移完成，新增 ${n} 项`)
@@ -625,5 +653,6 @@ export const TRAINING_TABLES = [
   'accounts', 'account_events', 'imported_trades', 'futures_daily_summary',
   'futures_open_positions', 'cfmmc_period_end_lots',
   'journal_notes', 'note_images', 'note_templates',
+  'trade_screenshots',
   's3_backup_settings', 'persistence_resource_usage', 'meta'
 ]

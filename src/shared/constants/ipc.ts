@@ -72,6 +72,12 @@ export const IPC = {
   DB_COMPUTE_MAE_MFE: 'db:computeMaeMfeForAccount',
   DB_UPDATE_TRADE_REFLECTION: 'db:updateTradeReflection',
 
+  // ----- 数据库: 交易截图（编辑交易时从 K 线图截下来的图） -----
+  DB_LIST_TRADE_SCREENSHOTS: 'db:listTradeScreenshots',
+  DB_GET_TRADE_SCREENSHOT: 'db:getTradeScreenshot',
+  DB_ADD_TRADE_SCREENSHOT: 'db:addTradeScreenshot',
+  DB_DELETE_TRADE_SCREENSHOT: 'db:deleteTradeScreenshot',
+
   // ----- 数据库: 账户 -----
   DB_LIST_ACCOUNTS: 'db:listAccounts',
   DB_CREATE_ACCOUNT: 'db:createAccount',
@@ -138,6 +144,7 @@ export const IPC = {
   FILE_PEEK_CSV: 'file:peekCsvFile',
   FILE_READ_CSV: 'file:readCsvFile',
   FILE_SAVE_CSV: 'file:saveCsvFile',
+  FILE_EXPORT_XLSX: 'file:exportXlsx',
   FILE_OPEN_JOURNAL: 'file:openJournalFile',
   FILE_SAVE_HTML: 'file:saveHtmlFile',
 
@@ -197,6 +204,14 @@ export const IPC = {
   // 交易成本模型（手续费 + 滑点）
   SETTINGS_GET_EXECUTION_COST: 'settings:getExecutionCost',
   SETTINGS_SET_EXECUTION_COST: 'settings:setExecutionCost',
+  // 自动截图：订单平仓后按哪些周期各截一张
+  SETTINGS_GET_AUTO_SHOTS: 'settings:getAutoShots',
+  SETTINGS_SET_AUTO_SHOTS: 'settings:setAutoShots',
+
+  // ----- 本地 MCP 服务（只读，供外部 AI 连接） -----
+  MCP_GET_STATUS: 'mcp:getStatus',
+  MCP_SET_SETTINGS: 'mcp:setSettings',
+  MCP_RESTART: 'mcp:restart',
 
   // ----- 备份 -----
   BACKUP_EXPORT: 'backup:export',

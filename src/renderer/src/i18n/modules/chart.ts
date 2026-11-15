@@ -33,7 +33,9 @@ export const zh = {
   'chart.pendingCancelHint': '不下这笔',
   'chart.pendingLot': '{side} {lot} 手',
   'chart.pendingLotHint': '手数可调：↑ / ↓ 每次 0.01 手，按住 Shift 每次 0.10 手；金额会跟着重算',
-  'chart.pendingNoSl': '未设止损',
+  /** 还没设止损时代替金额显示的提示：顺序是「先止损、再止盈」 */
+  'chart.pendingSlFirst': '先拖止损',
+  'chart.pendingSlFirstHint': '止盈要排在止损之后：先拖出止损，再拖出止盈',
 
   // ── 坐标轴刻度 ─────────────────────────────────────
   'chart.axisMonth': '{m}月',
@@ -129,7 +131,8 @@ export const en: Record<keyof typeof zh, string> = {
   'chart.pendingCancelHint': 'Skip this order',
   'chart.pendingLot': '{side} {lot} lots',
   'chart.pendingLotHint': 'Adjustable: ↑ / ↓ steps 0.01 lot, hold Shift for 0.10; the amount recalculates',
-  'chart.pendingNoSl': 'No SL',
+  'chart.pendingSlFirst': 'Drag SL first',
+  'chart.pendingSlFirstHint': 'The take-profit comes after the stop-loss: drag out the stop first, then the take-profit',
 
   'chart.axisMonth': '{m}',
   'chart.axisDay': '{d}',

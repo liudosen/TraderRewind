@@ -4,6 +4,7 @@
 // ============================================================
 
 import { ipcMain } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { IPC } from '@shared/constants/ipc'
 import { getMarketDb, getTrainingDb } from '../db/connection'
 import { loadSettings } from '../settings'
@@ -185,6 +186,8 @@ export function registerDbHandlers(): void {
     const now = Date.now()
     const run = db.transaction(() => {
       db.prepare('DELETE FROM closed_trades WHERE session_id = ?').run(id)
+      // 截图挂在成交记录上：订单清空后图也没有意义了，一起删
+      db.prepare('DELETE FROM trade_screenshots WHERE session_id = ?').run(id)
       db.prepare('DELETE FROM positions WHERE session_id = ?').run(id)
       db.prepare('DELETE FROM pending_orders WHERE session_id = ?').run(id)
       const row = db.prepare('SELECT initial_balance FROM sessions WHERE id = ?').get(id) as any
@@ -324,6 +327,83 @@ export function registerDbHandlers(): void {
       return res.changes > 0
     }
   )
+
+  // ----- 交易截图（训练库） -----
+  /**
+   * 截图存 BLOB。
+   *
+   * 上限按「一张图最多 8MB、一笔交易最多 20 张」卡：正常图表截图只有几百 KB，
+   * 真撞到上限说明传的不是截图（或渲染出问题），直接拒绝比悄悄写进库里好。
+   */
+  const SHOT_MAX_BYTES = 8 * 1024 * 1024
+  const SHOT_MAX_PER_TRADE = 20
+
+  ipcMain.handle(IPC.DB_LIST_TRADE_SCREENSHOTS, (_e, sessionId: number, tradeId: string) => {
+    return t()
+      .prepare(
+        `SELECT id, width, height, byte_size AS byteSize, created_at AS createdAt
+           FROM trade_screenshots
+          WHERE session_id = ? AND trade_id = ?
+          ORDER BY created_at ASC`
+      )
+      .all(sessionId, tradeId)
+  })
+
+  ipcMain.handle(IPC.DB_GET_TRADE_SCREENSHOT, (_e, id: string) => {
+    const row = t()
+      .prepare('SELECT mime, bytes FROM trade_screenshots WHERE id = ?')
+      .get(id) as { mime: string; bytes: Buffer } | undefined
+    if (!row) return null
+    return { mime: row.mime, base64: Buffer.from(row.bytes).toString('base64') }
+  })
+
+  ipcMain.handle(
+    IPC.DB_ADD_TRADE_SCREENSHOT,
+    (
+      _e,
+      input: { sessionId: number; tradeId: string; dataUrl: string; width: number; height: number }
+    ) => {
+      const sessionId = Number(input?.sessionId)
+      const tradeId = String(input?.tradeId ?? '')
+      if (!Number.isFinite(sessionId) || !tradeId) return { ok: false as const, error: 'bad-input' }
+
+      // 只收 base64 PNG：图表截图走的也是这条路径，别的格式没有理由出现
+      const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(input?.dataUrl ?? ''))
+      if (!m) return { ok: false as const, error: 'bad-format' }
+      const bytes = Buffer.from(m[1], 'base64')
+      if (bytes.length === 0 || bytes.length > SHOT_MAX_BYTES) {
+        return { ok: false as const, error: 'too-large' }
+      }
+      if (!bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+        return { ok: false as const, error: 'bad-format' }
+      }
+
+      const db = t()
+      const belongs = db
+        .prepare('SELECT 1 FROM closed_trades WHERE session_id = ? AND id = ?')
+        .get(sessionId, tradeId)
+      if (!belongs) return { ok: false as const, error: 'no-trade' }
+      const count = db
+        .prepare('SELECT COUNT(*) AS n FROM trade_screenshots WHERE session_id = ? AND trade_id = ?')
+        .get(sessionId, tradeId) as { n: number }
+      if (count.n >= SHOT_MAX_PER_TRADE) return { ok: false as const, error: 'too-many' }
+
+      const id = `shot_${randomUUID()}`
+      const width = Number.isFinite(Number(input?.width)) ? Math.round(Number(input.width)) : null
+      const height = Number.isFinite(Number(input?.height)) ? Math.round(Number(input.height)) : null
+      const createdAt = Date.now()
+      db.prepare(
+        `INSERT INTO trade_screenshots (id, session_id, trade_id, mime, bytes, byte_size, width, height, created_at)
+         VALUES (?, ?, ?, 'image/png', ?, ?, ?, ?, ?)`
+      ).run(id, sessionId, tradeId, bytes, bytes.length, width, height, createdAt)
+      return { ok: true as const, shot: { id, width, height, byteSize: bytes.length, createdAt } }
+    }
+  )
+
+  ipcMain.handle(IPC.DB_DELETE_TRADE_SCREENSHOT, (_e, id: string) => {
+    const res = t().prepare('DELETE FROM trade_screenshots WHERE id = ?').run(id)
+    return res.changes > 0
+  })
 
   // ----- 账户（训练库） -----
   ipcMain.handle(IPC.DB_LIST_ACCOUNTS, () => {

@@ -1,0 +1,90 @@
+[
+  {
+    "filter": "baseline",
+    "kept_n": 379,
+    "kept_win": 0.4274,
+    "kept_pnl": 3369.811,
+    "kept_avg_r": 0.0889,
+    "removed_n": 0,
+    "removed_pnl": 0.0,
+    "delta_pnl": 0.0,
+    "sessions_improved": 0
+  },
+  {
+    "filter": "exclude counter-trend (M30)",
+    "kept_n": 307,
+    "kept_win": 0.4625,
+    "kept_pnl": 5037.356,
+    "kept_avg_r": 0.1641,
+    "removed_n": 72,
+    "removed_pnl": -1667.545,
+    "delta_pnl": 1667.545,
+    "sessions_improved": 7
+  },
+  {
+    "filter": "exclude M30 range bottom quintile",
+    "kept_n": 303,
+    "kept_win": 0.4653,
+    "kept_pnl": 5714.147,
+    "kept_avg_r": 0.1886,
+    "removed_n": 76,
+    "removed_pnl": -2344.336,
+    "delta_pnl": 2344.336,
+    "sessions_improved": 7
+  },
+  {
+    "filter": "exclude 13:00 hour",
+    "kept_n": 349,
+    "kept_win": 0.4441,
+    "kept_pnl": 4355.821,
+    "kept_avg_r": 0.1248,
+    "removed_n": 30,
+    "removed_pnl": -986.01,
+    "delta_pnl": 986.01,
+    "sessions_improved": 7
+  },
+  {
+    "filter": "exclude fixed-stop planned RR >= 2",
+    "kept_n": 270,
+    "kept_win": 0.5444,
+    "kept_pnl": 8679.685,
+    "kept_avg_r": 0.3215,
+    "removed_n": 109,
+    "removed_pnl": -5309.874,
+    "delta_pnl": 5309.874,
+    "sessions_improved": 7
+  },
+  {
+    "filter": "exclude 11-13 window",
+    "kept_n": 301,
+    "kept_win": 0.4618,
+    "kept_pnl": 4803.809,
+    "kept_avg_r": 0.1596,
+    "removed_n": 78,
+    "removed_pnl": -1433.998,
+    "delta_pnl": 1433.998,
+    "sessions_improved": 5
+  },
+  {
+    "filter": "combined quality gate",
+    "kept_n": 184,
+    "kept_win": 0.625,
+    "kept_pnl": 8962.062,
+    "kept_avg_r": 0.4871,
+    "removed_n": 195,
+    "removed_pnl": -5592.251,
+    "delta_pnl": 5592.251,
+    "sessions_improved": 8
+  },
+  {
+    "filter": "combined (no RR filter)",
+    "kept_n": 249,
+    "kept_win": 0.498,
+    "kept_pnl": 5847.888,
+    "kept_avg_r": 0.2349,
+    "removed_n": 130,
+    "removed_pnl": -2478.077,
+    "delta_pnl": 2478.077,
+    "sessions_improved": 6
+  }
+]

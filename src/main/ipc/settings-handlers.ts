@@ -13,6 +13,7 @@ import {
   loadSettings,
   updateChartTheme,
   updateExecutionCost,
+  updateAutoShotTimeframes,
   updateIndicatorPrefs,
   updateStorageDir,
   updateTimezone,
@@ -191,6 +192,20 @@ export function registerSettingsHandlers(): void {
   ipcMain.handle(IPC.SETTINGS_SET_EXECUTION_COST, (_e, cost: unknown) => {
     try {
       return { ok: true, cost: updateExecutionCost(cost).executionCost }
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) }
+    }
+  })
+
+  // 自动截图：订单平仓后按哪些周期各截一张（最多 5 个）
+  ipcMain.handle(IPC.SETTINGS_GET_AUTO_SHOTS, () => loadSettings().autoShotTimeframes)
+
+  ipcMain.handle(IPC.SETTINGS_SET_AUTO_SHOTS, (_e, timeframes: unknown) => {
+    try {
+      return {
+        ok: true,
+        timeframes: updateAutoShotTimeframes(timeframes).autoShotTimeframes
+      }
     } catch (e: any) {
       return { ok: false, error: e?.message ?? String(e) }
     }

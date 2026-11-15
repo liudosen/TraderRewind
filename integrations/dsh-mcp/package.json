@@ -1,0 +1,16 @@
+{
+  "name": "@local/traderrewind-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness MCP bundle for TraderRewind's local read-only MCP server",
+  "files": [
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

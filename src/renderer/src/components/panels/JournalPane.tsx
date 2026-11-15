@@ -4,11 +4,14 @@ import {
   BookOpen,
   RefreshCw,
   CheckCircle2,
+  AlertTriangle,
   ArrowUpRight,
   ChevronsLeft,
   ChevronsRight,
   ChevronDown,
-  LineChart
+  FileSpreadsheet,
+  LineChart,
+  Loader2
 } from 'lucide-react'
 import { useTrainingStore, rowToTrade, type ClosedTrade } from '../../stores/training-store'
 import { useAppStore } from '../../stores/app-store'
@@ -18,7 +21,7 @@ import { TradeMetaDialog } from './TradeMetaDialog'
 import { formatSigned, formatSpentTime } from '../../utils/format'
 import { useT } from '../../i18n'
 import { useTimezoneStore } from '../../stores/timezone-store'
-import { fmtTzDate, fmtTzShort, tzPartsFromMs } from '@shared/types/timezone'
+import { fmtTzDate, fmtTzShort, tzPartsFromMs, tzPartsFromSec } from '@shared/types/timezone'
 import {
   ensureSessionGroups,
   loadSessionGroups,
@@ -256,6 +259,118 @@ export function JournalPane(): React.JSX.Element {
     return ok
   }
 
+  /** 导出状态：按钮 loading + 右下角一条几秒后自动消失的结果提示 */
+  const [exporting, setExporting] = useState(false)
+  const [exportToast, setExportToast] = useState<{ ok: boolean; text: string } | null>(null)
+  const exportToastTimer = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (exportToastTimer.current) window.clearTimeout(exportToastTimer.current)
+    },
+    []
+  )
+  const showExportToast = (ok: boolean, text: string): void => {
+    setExportToast({ ok, text })
+    if (exportToastTimer.current) window.clearTimeout(exportToastTimer.current)
+    exportToastTimer.current = window.setTimeout(() => setExportToast(null), 6000)
+  }
+
+  /**
+   * 把当前回测集的**全部**成交记录导成 .xlsx。
+   *
+   * 表格内容在这里拼（时区、方向、平仓原因都要走界面这套文案 / 口径），
+   * 主进程只负责保存对话框和写文件。标签筛选不影响导出：用户要的是整本账。
+   */
+  const exportExcel = async (): Promise<void> => {
+    if (!selected || trades.length === 0 || exporting) return
+    setExporting(true)
+    try {
+      const tz = selected.tz ?? timezone
+      const risk =
+        selected.risk_per_trade && selected.risk_per_trade > 0
+          ? selected.risk_per_trade
+          : Math.max(1, selected.initial_balance * 0.01)
+      const pad = (v: number): string => String(v).padStart(2, '0')
+      const fullTime = (ts: number): string => {
+        const p = tzPartsFromSec(ts, tz)
+        return `${p.year}-${pad(p.month)}-${pad(p.day)} ${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}`
+      }
+      const reasonText = (reason: ClosedTrade['reason']): string =>
+        reason === 'sl'
+          ? t('report.reason.sl')
+          : reason === 'tp'
+            ? t('report.reason.tp')
+            : reason === 'trail'
+              ? t('report.reason.trail')
+              : reason === 'partial'
+                ? t('report.reason.partial')
+                : t('report.reason.manual')
+      // Excel 里不要留 156.559999999993 这种浮点尾巴
+      const money2 = (v: number | null | undefined): number | null =>
+        v == null || !Number.isFinite(v) ? null : Number(v.toFixed(2))
+      const price = (v: number | null | undefined, digits: number): number | null =>
+        v == null || !Number.isFinite(v) ? null : Number(v.toFixed(digits))
+
+      const rows: (string | number | null)[][] = [
+        [
+          '#',
+          t('journal.export.col.open'),
+          t('journal.export.col.close'),
+          t('report.col.side'),
+          t('report.col.lots'),
+          t('report.col.entry'),
+          t('report.col.exit'),
+          t('journal.export.col.sl'),
+          t('journal.export.col.tp'),
+          t('report.col.reason'),
+          t('report.col.tags'),
+          t('report.col.pnl'),
+          t('journal.export.col.commission'),
+          t('journal.export.col.r'),
+          t('report.col.note')
+        ],
+        ...trades.map((tr, i) => [
+          i + 1,
+          fullTime(tr.entryTime),
+          fullTime(tr.exitTime),
+          tr.side === 'buy' ? t('report.side.long') : t('report.side.short'),
+          Number(tr.lot.toFixed(2)),
+          price(tr.entryPrice, tr.digits),
+          price(tr.exitPrice, tr.digits),
+          price(tr.sl, tr.digits),
+          price(tr.tp, tr.digits),
+          reasonText(tr.reason),
+          tr.tags.join(', '),
+          money2(tr.pnl),
+          money2(tr.commission ?? 0),
+          Number((tr.pnl / risk).toFixed(2)),
+          tr.note ?? ''
+        ])
+      ]
+
+      const rawName =
+        (selected.name ?? '').trim() ||
+        `${selected.dataset_symbol ?? ''}_${selected.display_timeframe ?? ''}`.replace(/^_|_$/g, '')
+      const res = await window.api.exportXlsx({
+        fileName: t('journal.export.fileName', { name: rawName || 'traderrewind' }),
+        sheetName: t('journal.export.sheet'),
+        rows,
+        columnWidths: [6, 20, 20, 8, 8, 12, 12, 14, 14, 12, 22, 14, 12, 8, 52]
+      })
+      if (res?.canceled) return
+      if (res?.path) {
+        const short = res.path.split(/[\\/]/).pop() ?? res.path
+        showExportToast(true, t('journal.export.done', { file: short }))
+      } else {
+        showExportToast(false, t('journal.export.failed'))
+      }
+    } catch {
+      showExportToast(false, t('journal.export.failed'))
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="flex h-full">
       {/* 左：已完成的回测集 */}
@@ -474,18 +589,33 @@ export function JournalPane(): React.JSX.Element {
                   {/* 用时 / 初始资金 / 其余设置都收在下面的「训练参数」卡里，这里不重复 */}
                 </p>
               </div>
-              <button
-                onClick={() => {
-                  void (async () => {
-                    await useTrainingStore.getState().openSession(selected.id)
-                    useAppStore.getState().setActivePane('training')
-                  })()
-                }}
-                className="ml-auto flex shrink-0 items-center gap-1 rounded-md border border-[var(--border-strong)] px-2.5 py-1 text-[12.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
-              >
-                {t('journal.backToChart')}
-                <ArrowUpRight size={13} />
-              </button>
+              <div className="ml-auto flex shrink-0 items-center gap-2">
+                <button
+                  onClick={() => void exportExcel()}
+                  disabled={trades.length === 0 || exporting}
+                  title={t('journal.export.hint')}
+                  className="flex items-center gap-1 rounded-md border border-[var(--border-strong)] px-2.5 py-1 text-[12.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--c-accent)] hover:text-[var(--c-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {exporting ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <FileSpreadsheet size={13} />
+                  )}
+                  {t('journal.export.button')}
+                </button>
+                <button
+                  onClick={() => {
+                    void (async () => {
+                      await useTrainingStore.getState().openSession(selected.id)
+                      useAppStore.getState().setActivePane('training')
+                    })()
+                  }}
+                  className="flex shrink-0 items-center gap-1 rounded-md border border-[var(--border-strong)] px-2.5 py-1 text-[12.5px] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  {t('journal.backToChart')}
+                  <ArrowUpRight size={13} />
+                </button>
+              </div>
             </div>
 
             {tradeLoading ? (
@@ -537,9 +667,33 @@ export function JournalPane(): React.JSX.Element {
         <TradeMetaDialog
           trade={editing}
           tz={selected?.tz ?? timezone}
+          sessionId={selected?.id ?? null}
+          datasetId={selected?.dataset_id ?? null}
+          timeframe={selected?.display_timeframe ?? null}
           onClose={() => setEditing(null)}
           onSave={(note, tags) => saveTradeMeta(editing, note, tags)}
         />
+      )}
+
+      {/* 导出结果：右下角停留几秒，不挡操作 */}
+      {exportToast && (
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[60]">
+          <div
+            className={clsx(
+              'flex max-w-[420px] items-center gap-2 rounded-lg border px-3 py-2 text-[11.5px] shadow-2xl backdrop-blur',
+              exportToast.ok
+                ? 'border-[var(--c-pos)]/40 bg-[var(--surface-1)]/95 text-[var(--text-primary)]'
+                : 'border-[var(--c-neg)]/45 bg-[var(--surface-1)]/95 text-[var(--text-primary)]'
+            )}
+          >
+            {exportToast.ok ? (
+              <CheckCircle2 size={13} className="shrink-0 text-[var(--c-pos)]" />
+            ) : (
+              <AlertTriangle size={13} className="shrink-0 text-[var(--c-neg)]" />
+            )}
+            <span className="break-all">{exportToast.text}</span>
+          </div>
+        </div>
       )}
     </div>
   )

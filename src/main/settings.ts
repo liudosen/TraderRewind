@@ -22,6 +22,11 @@ import {
   normalizeExecutionCost,
   type ExecutionCost
 } from '@shared/types/execution-cost'
+import {
+  normalizeMcpSettings,
+  type McpSettings
+} from '@shared/types/mcp'
+import { normalizeAutoShotTimeframes } from '@shared/types/auto-shot'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, normalize } from 'node:path'
 
@@ -42,6 +47,10 @@ export interface AppSettings {
   tradeTags: string[]
   /** 交易成本模型（手续费 + 滑点）：用户级，所有回测集共用；默认不计成本 */
   executionCost: ExecutionCost
+  /** 自动截图：订单完全平仓后按这些周期各截一张；空数组 = 关闭（最多 5 个） */
+  autoShotTimeframes: string[]
+  /** 本地 MCP 服务（只读，供外部 AI 客户端连接） */
+  mcp: McpSettings
 }
 
 export type StorageKind = 'kline' | 'training'
@@ -62,7 +71,9 @@ function defaults(): AppSettings {
     locale: DEFAULT_LOCALE,
     indicatorPrefs: { ...DEFAULT_INDICATOR_PREFS },
     tradeTags: [...DEFAULT_TAG_LIBRARY],
-    executionCost: { ...DEFAULT_EXECUTION_COST }
+    executionCost: { ...DEFAULT_EXECUTION_COST },
+    autoShotTimeframes: [],
+    mcp: normalizeMcpSettings(undefined)
   }
 }
 
@@ -100,7 +111,9 @@ export function loadSettings(): AppSettings {
         locale: normalizeLocale((raw as any).locale),
         indicatorPrefs: normalizeIndicatorPrefs((raw as any).indicatorPrefs),
         tradeTags: rawTags === undefined ? [...def.tradeTags] : normalizeTagLibrary(rawTags),
-        executionCost: normalizeExecutionCost((raw as any).executionCost)
+        executionCost: normalizeExecutionCost((raw as any).executionCost),
+        autoShotTimeframes: normalizeAutoShotTimeframes((raw as any).autoShotTimeframes),
+        mcp: normalizeMcpSettings((raw as any).mcp)
       }
       return cache
     }
@@ -162,6 +175,25 @@ export function updateIndicatorPrefs(prefs: unknown): AppSettings {
 export function updateExecutionCost(cost: unknown): AppSettings {
   const current = loadSettings()
   const next: AppSettings = { ...current, executionCost: normalizeExecutionCost(cost) }
+  saveSettings(next)
+  return next
+}
+
+/** 保存自动截图的周期列表（最多 5 个，空数组 = 关闭） */
+export function updateAutoShotTimeframes(value: unknown): AppSettings {
+  const current = loadSettings()
+  const next: AppSettings = {
+    ...current,
+    autoShotTimeframes: normalizeAutoShotTimeframes(value)
+  }
+  saveSettings(next)
+  return next
+}
+
+/** 保存本地 MCP 服务开关 / 端口 */
+export function updateMcpSettings(value: unknown): AppSettings {
+  const current = loadSettings()
+  const next: AppSettings = { ...current, mcp: normalizeMcpSettings(value) }
   saveSettings(next)
   return next
 }

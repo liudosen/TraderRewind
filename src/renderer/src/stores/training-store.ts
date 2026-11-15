@@ -10,6 +10,7 @@ import { calcPnl, quoteUsdRate } from '@shared/utils/pnl'
 import {
   aggregateBars,
   bucketStart,
+  bufferToBars,
   indexAtTime,
   isChartTimeframe,
   partialBucketBar,
@@ -56,6 +57,8 @@ import {
   type ExecutionCost
 } from '@shared/types/execution-cost'
 import { fmtTzClock } from '@shared/types/timezone'
+import { normalizeAutoShotTimeframes } from '@shared/types/auto-shot'
+import { enqueueAutoTradeShots } from '../components/chart/auto-trade-shot'
 
 export { MAX_TRADE_TAGS, MAX_TRADE_TAG_LEN }
 export type { TradeWindow }
@@ -366,6 +369,8 @@ interface TrainingState {
   tagLibrary: string[]
   /** 交易成本模型（手续费 + 滑点）：用户级，所有回测集共用；默认不计成本 */
   executionCost: ExecutionCost
+  /** 自动截图：订单完全平仓后按这些周期各截一张；空数组 = 关闭（最多 5 个） */
+  autoShotTimeframes: string[]
   /** 报告里点选的交易（图表上高亮其开/关仓线） */
   focusedTrade: ClosedTrade | null
   /**
@@ -460,6 +465,10 @@ interface TrainingState {
   loadExecutionCost: () => Promise<void>
   /** 改交易成本模型（手续费 + 滑点）：写内存 + 节流落盘 */
   setExecutionCost: (cost: ExecutionCost) => void
+  /** 读自动截图周期（应用启动时调一次） */
+  loadAutoShotSettings: () => Promise<void>
+  /** 改自动截图周期：写内存 + 立即落盘（最多 5 个，空数组 = 关闭） */
+  setAutoShotTimeframes: (timeframes: string[]) => void
 
   setFocusedTrade: (trade: ClosedTrade | null) => void
   focusTrade: (trade: ClosedTrade) => void
@@ -684,23 +693,6 @@ export function crossRateAt(cross: CrossRateSeries | null, time: number): number
  * 这里保留同名导出，训练页的浮动盈亏、报表都还在用它。
  */
 export { calcPnl, quoteUsdRate } from '@shared/utils/pnl'
-/** IPC 传回的 Float64 缓冲 → K 线数组（每根 6 个字段） */
-function bufferToBars(buffer: ArrayBuffer, count: number): Bar[] {
-  const view = new Float64Array(buffer)
-  const bars: Bar[] = new Array(count)
-  for (let i = 0; i < count; i++) {
-    const o = i * 6
-    bars[i] = {
-      time: view[o],
-      open: view[o + 1],
-      high: view[o + 2],
-      low: view[o + 3],
-      close: view[o + 4],
-      volume: view[o + 5]
-    }
-  }
-  return bars
-}
 
 export function rowToTrade(row: any): ClosedTrade {
   const symbol = row.symbol ?? ''
@@ -897,6 +889,21 @@ function settlePosition(
     initialRiskAmount: get().riskPerTrade
   })
 
+  /**
+   * 自动截图：只有「整笔平掉」才算订单结束，减仓不触发。
+   *
+   * 截图是异步的（要读 K 线、离屏建图、合成 PNG），不能卡住回放推进，
+   * 所以丢进队列里排队，失败也不影响订单本身。
+   */
+  if (remainderLot === 0 && get().autoShotTimeframes.length > 0) {
+    enqueueAutoTradeShots(trade, {
+      sessionId: activeSession.id,
+      datasetId: activeSession.dataset_id,
+      tz: activeSession.tz ?? useTimezoneStore.getState().timezone,
+      timeframes: get().autoShotTimeframes
+    })
+  }
+
   get().persistState()
 }
 
@@ -935,6 +942,7 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
   prefsLoaded: false,
   tagLibrary: [...DEFAULT_TAG_LIBRARY],
   executionCost: { ...DEFAULT_EXECUTION_COST },
+  autoShotTimeframes: [],
   focusedTrade: null,
   focusSeq: 0,
   focusNote: null,
@@ -1672,6 +1680,21 @@ export const useTrainingStore = create<TrainingState>((set, get) => ({
       costSaveTimer = null
       void window.api.setExecutionCost(next)
     }, 300)
+  },
+
+  loadAutoShotSettings: async () => {
+    try {
+      const remote = await window.api.getAutoShotTimeframes()
+      set({ autoShotTimeframes: normalizeAutoShotTimeframes(remote) })
+    } catch {
+      set({ autoShotTimeframes: [] })
+    }
+  },
+
+  setAutoShotTimeframes: (timeframes) => {
+    const next = normalizeAutoShotTimeframes(timeframes)
+    set({ autoShotTimeframes: next })
+    void window.api.setAutoShotTimeframes(next)
   },
 
   loadIndicatorPrefs: async () => {

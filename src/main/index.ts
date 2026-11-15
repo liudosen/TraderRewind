@@ -12,9 +12,11 @@ import { registerDataHandlers } from './ipc/data-handlers'
 import { registerSettingsHandlers } from './ipc/settings-handlers'
 import { registerUpdateHandlers } from './ipc/update-handlers'
 import { registerCtraderCredentialHandlers } from './ipc/ctrader-cred-handlers'
+import { registerMcpHandlers } from './ipc/mcp-handlers'
 import { scheduleInstallerCleanup, scheduleStartupCheck } from './services/updater'
 import { initDatabases, closeDatabases } from './db/connection'
 import { sharedCtraderClient } from './services/ctrader-mcp'
+import { startMcpServer, stopMcpServer } from './services/mcp-server'
 
 // 使用独立的用户数据目录，避免与其它同名程序共用 AppData 造成表结构冲突
 // TR_USER_DATA 仅供开发期自动化使用：把整个 userData 指到别处，测试就不会碰到真实数据
@@ -151,8 +153,15 @@ if (!gotTheLock) {
     registerSettingsHandlers()
     registerUpdateHandlers()
     registerCtraderCredentialHandlers()
+    registerMcpHandlers()
 
     createWindow()
+
+    /**
+     * 本地 MCP 服务：只监听 127.0.0.1，只读。
+     * 不阻塞窗口：端口被占用之类的问题只记录在状态里，设置页会显示。
+     */
+    void startMcpServer()
 
     /**
      * 开机顺手查一次版本：延迟 8 秒，等首屏、数据库、图表都就绪之后再说。
@@ -180,6 +189,7 @@ if (!gotTheLock) {
 
   let ctraderReleased = false
   app.on('before-quit', (e) => {
+    void stopMcpServer()
     closeDatabases()
     if (ctraderReleased) return
     // cTrader 的 MCP session 不会自动过期，不显式 DELETE 就会一直占着名额，
